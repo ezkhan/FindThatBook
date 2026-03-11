@@ -1,5 +1,6 @@
 <Solution>
   <File Path="README.md" />
+  <Project Path="FindThatBook.Tests/FindThatBook.Tests.csproj" />
   <Project Path="FindThatBook/FindThatBook.csproj" />
   <Project Path="FindThatBookSandbox/FindThatBookSandbox.csproj" Id="55e25750-0576-4da6-b497-e248fcb92458" />
 </Solution>

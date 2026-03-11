@@ -6,7 +6,9 @@ namespace FindThatBook.Services
 
         public string ApiKey { get; set; } = string.Empty;
 
-        /// <summary>Gemini model name. Defaults to gemini-1.5-flash (free tier).</summary>
-        public string Model { get; set; } = "gemini-1.5-flash";
+        /// <summary>
+        /// Gemini model name. Defaults to gemini-2.5-flash (free tier).
+        /// </summary>
+        public string Model { get; set; } = "gemini-2.5-flash";
     }
 }
