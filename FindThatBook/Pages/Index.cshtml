@@ -1,0 +1,188 @@
+@page
+@model FindThatBook.Pages.IndexModel
+@{
+    ViewData["Title"] = "Find That Book";
+}
+
+<div class="container py-4" style="max-width: 860px;">
+
+    <div class="mb-4">
+        <h1 class="fw-bold">Find That Book</h1>
+        <p class="text-muted">Describe a book as vaguely or messily as you like — we'll figure it out.</p>
+    </div>
+
+    <form method="post">
+        @if (!ViewData.ModelState.IsValid)
+        {
+            <div asp-validation-summary="All" class="alert alert-danger" role="alert"></div>
+        }
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-6">
+                <label asp-for="Query.Title" class="form-label">Title <span class="text-muted fw-normal">(optional)</span></label>
+                <input asp-for="Query.Title" class="form-control" placeholder="e.g. tale two cities" />
+            </div>
+            <div class="col-md-6">
+                <label asp-for="Query.Author" class="form-label">Author <span class="text-muted fw-normal">(optional)</span></label>
+                <input asp-for="Query.Author" class="form-control" placeholder="e.g. dickens" />
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="Query.FreeText" class="form-label fw-semibold">
+                Free-text description
+            </label>
+            <textarea asp-for="Query.FreeText"
+                      class="form-control"
+                      rows="3"
+                      placeholder="e.g. tolkien hobbit illustrated deluxe 1937, or &quot;that book where someone bets they can circle the globe in 80 days&quot;"></textarea>
+            <div class="form-text">Messy, partial, or vague — anything goes.</div>
+        </div>
+
+        <button type="submit" class="btn btn-primary px-4">
+            <span id="btn-spinner" class="spinner-border spinner-border-sm me-2 d-none" role="status"></span>
+            Search
+        </button>
+    </form>
+
+    @if (Model.Result != null)
+    {
+        <hr class="my-4" />
+
+        <div class="mb-3">
+            <h5 class="mb-1">Results for: <em>@Model.Result.OriginalQuery</em></h5>
+            @if (Model.Result.ExtractedFields.Title != null || Model.Result.ExtractedFields.Author != null || Model.Result.ExtractedFields.Keywords.Count > 0)
+            {
+                <small class="text-muted">
+                    AI parsed &mdash;
+                    @if (Model.Result.ExtractedFields.Title != null)
+                    {
+                        <span>title: <strong>@Model.Result.ExtractedFields.Title</strong></span>
+                    }
+                    @if (Model.Result.ExtractedFields.Author != null)
+                    {
+                        <span class="ms-2">author: <strong>@Model.Result.ExtractedFields.Author</strong></span>
+                    }
+                    @if (Model.Result.ExtractedFields.Keywords.Count > 0)
+                    {
+                        <span class="ms-2">keywords: <strong>@string.Join(", ", Model.Result.ExtractedFields.Keywords)</strong></span>
+                    }
+                </small>
+            }
+        </div>
+
+        @if (Model.Result.HasError)
+        {
+            <div class="alert alert-warning">@Model.Result.ErrorMessage</div>
+        }
+        else if (Model.Result.Candidates.Count == 0)
+        {
+            <p class="text-muted">No matches found. Try a different description.</p>
+        }
+        else
+        {
+            <div class="d-flex flex-column gap-3">
+                @foreach (var (candidate, index) in Model.Result.Candidates.Select((c, i) => (c, i)))
+                {
+                    <div class="card shadow-sm">
+                        <div class="row g-0">
+                            @if (!string.IsNullOrEmpty(candidate.CoverUrl))
+                            {
+                                <div class="col-auto d-flex align-items-start p-3">
+                                    <img src="@candidate.CoverUrl"
+                                         alt="Cover of @candidate.Title"
+                                         style="width:80px; height:110px; object-fit:cover; border-radius:4px;"
+                                         onerror="this.style.display='none'" />
+                                </div>
+                            }
+                            <div class="col">
+                                <div class="card-body">
+                                    <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap">
+                                        <div>
+                                            <h5 class="card-title mb-1">
+                                                <span class="badge bg-secondary me-2">@(index + 1)</span>
+                                                @candidate.Title
+                                            </h5>
+                                            <p class="card-text text-muted mb-1">
+                                                @if (candidate.PrimaryAuthors.Count > 0)
+                                                {
+                                                    <span>@string.Join(", ", candidate.PrimaryAuthors)</span>
+                                                }
+                                                @if (candidate.FirstPublishYear.HasValue)
+                                                {
+                                                    <span class="ms-2">&middot; @candidate.FirstPublishYear</span>
+                                                }
+                                            </p>
+                                            @if (candidate.Contributors.Count > 0)
+                                            {
+                                                <p class="card-text mb-1">
+                                                    <small class="text-muted">
+                                                        Contributors: @string.Join(", ", candidate.Contributors)
+                                                    </small>
+                                                </p>
+                                            }
+                                        </div>
+                                        <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                                            <span class="badge @GetTierBadgeClass(candidate.MatchTier) text-nowrap">
+                                                @GetTierLabel(candidate.MatchTier)
+                                            </span>
+                                            @if (!string.IsNullOrEmpty(candidate.OpenLibraryUrl))
+                                            {
+                                                <a href="@candidate.OpenLibraryUrl"
+                                                   target="_blank"
+                                                   rel="noopener noreferrer"
+                                                   class="btn btn-sm btn-outline-secondary">
+                                                    Open Library ↗
+                                                </a>
+                                            }
+                                        </div>
+                                    </div>
+
+                                    @if (!string.IsNullOrEmpty(candidate.Explanation))
+                                    {
+                                        <p class="card-text mt-2 fst-italic text-secondary">
+                                            &ldquo;@candidate.Explanation&rdquo;
+                                        </p>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+</div>
+
+@section Scripts {
+    <script>
+        document.querySelector('form').addEventListener('submit', function () {
+            const spinner = document.getElementById('btn-spinner');
+            if (spinner) spinner.classList.remove('d-none');
+        });
+    </script>
+}
+
+@functions {
+    static string GetTierBadgeClass(FindThatBook.Models.MatchTier tier) => tier switch
+    {
+        FindThatBook.Models.MatchTier.ExactTitlePrimaryAuthor     => "bg-success",
+        FindThatBook.Models.MatchTier.ExactTitleContributorAuthor => "bg-info text-dark",
+        FindThatBook.Models.MatchTier.ExactTitleOnly              => "bg-success",
+        FindThatBook.Models.MatchTier.NearMatchTitleAuthor        => "bg-primary",
+        FindThatBook.Models.MatchTier.NearMatchTitleOnly          => "bg-primary",
+        FindThatBook.Models.MatchTier.AuthorFallback              => "bg-warning text-dark",
+        _                                                         => "bg-secondary"
+    };
+
+    static string GetTierLabel(FindThatBook.Models.MatchTier tier) => tier switch
+    {
+        FindThatBook.Models.MatchTier.ExactTitlePrimaryAuthor     => "Exact match",
+        FindThatBook.Models.MatchTier.ExactTitleContributorAuthor => "Title match",
+        FindThatBook.Models.MatchTier.ExactTitleOnly              => "Title match",
+        FindThatBook.Models.MatchTier.NearMatchTitleAuthor        => "Near match",
+        FindThatBook.Models.MatchTier.NearMatchTitleOnly          => "Near match",
+        FindThatBook.Models.MatchTier.AuthorFallback              => "Author match",
+        _                                                         => "AI suggestion"
+    };
+}
