@@ -1,4 +1,4 @@
-# Find That Book
+﻿# Find That Book
 
 A book discovery application that accepts messy, partial, or vague natural-language queries and returns ranked candidate matches sourced from [Open Library](https://openlibrary.org), with AI-generated explanations for each result.
 
@@ -31,57 +31,64 @@ Users can query with any combination of:
 | Free-text description | `tolkien hobbit illustrated deluxe 1937` |
 | Vague / AI-only | `that book where someone bets they can circle the globe in 80 days` |
 
-The system handles sparse, noisy, and ambiguous input � including cases where the provided title and author contradict each other � and returns up to 5 ranked candidates, each with a one-sentence explanation grounded in the actual data retrieved.
+The system handles sparse, noisy, and ambiguous input — including cases where the provided title and author contradict each other — and returns up to 5 ranked candidates, each with a Gemini-generated explanation grounded in the actual data retrieved.
 
 ---
 
 ## Architecture
 
 ```
-???????????????????????????????????????????????????????
-?                  Browser / Client                   ?
-???????????????????????????????????????????????????????
-                     ?  POST /  (Razor Page form)
-                     ?  POST /api/search  (JSON API)
-???????????????????????????????????????????????????????
-?              ASP.NET Core (.NET 8)                  ?
-?                                                     ?
-?  Pages/Index  ???????????                           ?
-?  Controllers/Api/Search ??                           ?
-?                          ?                           ?
-?              IBookSearchService                     ?
-?           (orchestration layer)                     ?
-?                 /          \                        ?
-?   IGeminiService         IOpenLibraryService        ?
-?   (Google Gemini)        (openlibrary.org)          ?
-???????????????????????????????????????????????????????
++-------------------------------------------+
+|            Browser / Client               |
++-------------------------------------------+
+          |  POST /  (Razor Page form)
+          |  POST /api/search  (JSON API)
++-------------------------------------------+
+|           ASP.NET Core (.NET 8)           |
+|                                           |
+|  Pages/Index ----------+                  |
+|  Controllers/Api/Search+                  |
+|                        |                  |
+|           IBookSearchService              |
+|           (orchestration layer)           |
+|         /        |         \              |
+|  IGemini-  IOpenLib-  IStringSimilarity   |
+|  Service   aryService  (scoring strategy) |
+|    |                                      |
+|  IPromptProvider                          |
++-------------------------------------------+
 ```
 
 ### Request flow
 
 ```
-1. User submits query (Title? + Author? + FreeText?)
-        ?
+1. User submits query OneOf(Title? + Author? + FreeText?)
+        |
 2. GeminiService.ExtractFieldsAsync()
-   ?? Returns: { title?, author?, keywords[], suggestions[] }
-   ?? Fallback: raw query inputs used if Gemini fails or returns empty
-        ?
+   -> Returns: { title?, author?, keywords[], suggestions[] }
+      FieldSource stamped: UserInput if field was explicitly provided,
+                           AiExtracted if inferred from FreeText by Gemini
+   -> Fallback: raw query inputs used if Gemini fails or returns empty
+        |
 3. CollectSearchResultsAsync()
-   ?? OL /search.json  (title + author + keywords)  ?? parallel
-   ?? OL /search.json  � N AI suggestions            ??
-        ?
+   -> OL /search.json  (title + author + keywords -- combined)
+   -> OL /search.json  (title only)  --|
+   -> OL /search.json  (author only) --| parallel, only when both
+                                        title and author are present
+   -> OL /search.json  x N AI suggestions  -- parallel
+        |
 4. BuildCandidatesAsync()
-   ?? QuickDetermineTier() � pre-filter, no I/O
-   ?? OL /works/{id}.json  � top 5               ?? parallel
-   ?? OL /authors/{id}.json � resolved authors   ?? parallel
-        ?
+   -> QuickDetermineTier() -- pre-filter, no I/O
+   -> OL /works/{id}.json   -- top 5               -- parallel
+   -> OL /authors/{id}.json -- resolved authors    -- parallel
+        |
 5. AuthorWorksFallbackAsync()   (if no title matches found)
-   ?? OL /authors/{id}/works.json
-        ?
+   -> OL /authors/{id}/works.json
+        |
 6. Score, de-duplicate by WorkId, sort, cap at 5 candidates
-        ?
-7. GeminiService.GenerateExplanationAsync() � 5  ?? parallel
-        ?                                          ??
+        |
+7. GeminiService.GenerateExplanationAsync() x 5  -- parallel
+        |
 8. Return SearchResult
 ```
 
@@ -91,47 +98,82 @@ The system handles sparse, noisy, and ambiguous input � including cases where th
 
 ### Fuzzy match scoring
 
-Rather than discrete tiers alone, each candidate receives a continuous relevance score used for final ranking:
+Each candidate receives a continuous relevance score used for final ranking:
 
 ```
-score = (titleScore � 0.7) + (authorScore � 0.5) + (keywordScore � 0.3)
+score = (userInputTitle  x 0.7) + (geminiTitle  x 0.6)
+      + (userInputAuthor x 0.5) + (geminiAuthor x 0.4)
+      + (keywords        x 0.3)
 ```
 
-- **Title weight (0.7) > author weight (0.5)** ensures a correct-title/wrong-author result always outranks a correct-author/wrong-title result � matching the spec's priority hierarchy.
-- Each component score is `[0.0�1.0]`: exact normalized match ? 1.0; token overlap ratio for partial matches.
-- Contributor author matches are discounted to 0.6 (vs 1.0 for primary author) since contributors are lower-confidence signals.
-- Scores above 1.0 are possible (e.g. exact title + exact primary author = 1.2), which is intentional.
+- **User-supplied fields carry higher weight than AI-inferred ones.** `FieldSource.UserInput` (from the explicit Title/Author input fields) uses the higher weight column; `FieldSource.AiExtracted` (Gemini-inferred from free-text) uses the reduced column. This distinction is stamped during extraction and preserved through the fallback path.
+- **Exact normalized matches** score 1.0. **Partial matches** are scored via the pluggable `IStringSimilarity` strategy (default: `LevenshteinSimilarity` — `1 - editDistance / max(|a|, |b|)`), giving a score that scales inversely with edit distance.
+- **Contributor author matches** are discounted to 0.6 vs 1.0 for primary authors. Partial matches in the contributor fallback are further multiplied by 0.5.
+- Scores above 1.0 are possible when title and author both match strongly (e.g. exact user-input title + exact primary author = 1.2).
+
+### Swappable similarity strategy
+
+Partial match scoring is delegated to an `IStringSimilarity` interface following the strategy pattern. Two implementations are provided:
+
+| Implementation | Algorithm | Best for |
+|---|---|---|
+| `LevenshteinSimilarity` *(default)* | `1 - editDist / max(\|a\|, \|b\|)` | General-purpose fuzzy matching |
+| `JaroWinklerSimilarity` | Jaro similarity + common-prefix boost | Proper names and short titles where shared prefixes carry more signal |
+
+To swap implementations, change one line in `Program.cs`:
+
+```csharp
+// builder.Services.AddSingleton<IStringSimilarity, LevenshteinSimilarity>();
+builder.Services.AddSingleton<IStringSimilarity, JaroWinklerSimilarity>();
+```
 
 ### Match tier (categorical display)
 
-A `MatchTier` enum is retained alongside the score purely for the UI badge:
+A `MatchTier` enum is retained alongside the continuous score purely for the UI badge:
 
 | Tier | Condition |
 |---|---|
 | `ExactTitlePrimaryAuthor` | Exact normalized title + primary author |
 | `ExactTitleContributorAuthor` | Exact title + contributor (not primary) author |
-| `ExactTitleOnly` | Exact title � author unconfirmed or no match |
+| `ExactTitleOnly` | Exact title — author unconfirmed or no match |
 | `NearMatchTitleAuthor` | All title tokens present + author match |
-| `NearMatchTitleOnly` | All title tokens present � author unconfirmed |
+| `NearMatchTitleOnly` | All title tokens present — author unconfirmed |
 | `AuthorFallback` | Author confirmed, no title signal |
 | `KeywordFallback` | AI-recognized or keyword-only match |
 
+### Independent field searching
+
+When the user provides **both** a title and an author, three Open Library searches run in parallel:
+
+1. Combined (`title=X&author=Y`) — the most specific query
+2. Title-only (`title=X`) — surfaces correct-title books when the author is wrong
+3. Author-only (`author=Y`) — surfaces correct-author books when the title is wrong
+
+Results are de-duplicated by work key. This ensures that a mismatched pair such as `title: Hamlet, author: Verne` still returns Hamlet by Shakespeare and works by Jules Verne, ordered by their respective component scores.
+
 ### Primary author vs contributor distinction
 
-Open Library's `/works/{id}.json` `authors` array includes a `role` field per entry. A `null`/empty role indicates a primary author; a non-null role (`"Illustrator"`, `"Adaptor"`, etc.) indicates a contributor. This is used for both tier classification and surfaced in result cards and AI explanations (e.g. *"Tolkien is primary author; Dixon listed as adaptor"*).
+Open Library's `/works/{id}.json` `authors` array includes a `role` field per entry. A `null`/empty role indicates a primary author; a non-null role (`"Illustrator"`, `"Adaptor"`, etc.) indicates a contributor. This is used for both tier classification and is surfaced in result cards and AI explanations (e.g. *"Tolkien is primary author; Dixon listed as adaptor"*).
 
 ### AI integration (Gemini)
 
 Two Gemini calls are made per search:
 
-1. **Field extraction** (`responseMimeType: "application/json"`, `temperature: 0.1`) � parses the user's query into `{ title?, author?, keywords[], suggestions[] }`. The structured JSON mode avoids markdown fence stripping.
-2. **Per-candidate explanation** (plain text, parallel) � generates a 1�2 sentence "why it matched" rationale grounded in the actual Open Library fields retrieved.
+1. **Field extraction** (`responseMimeType: "application/json"`, `temperature: 0.1`) — parses the user's query into `{ title?, author?, keywords[], suggestions[] }`. Structured JSON mode avoids markdown-fence stripping.
+2. **Per-candidate explanation** (plain text, parallel) — generates a 1–2 sentence "why it matched" rationale grounded in the actual Open Library fields retrieved, displayed inline on each result card.
 
-The `suggestions[]` list enables AI-knowledge-based matching: Gemini can recognise *"that book where someone bets they can circle the globe in 80 days"* as *Around the World in Eighty Days* from training data even with no parseable title or author tokens. Each suggestion must include a `reason` field.
+Both prompts are loaded from **Markdown template files** (`Prompts/extraction.md`, `Prompts/explanation.md`) at startup via `IPromptProvider` / `FilePromptProvider`. To try a different prompt, duplicate the `.md` file, edit it, and point `GeminiOptions.ExtractionPromptFile` at the new filename — no code change required.
+
+The `suggestions[]` list enables AI-knowledge-based matching: Gemini can recognise *"that book where someone bets they can circle the globe in 80 days"* as *Around the World in Eighty Days* from training data even when no title or author tokens are parseable. Each suggestion must include a `reason` field.
 
 ### Graceful degradation
 
-If Gemini is unavailable, rate-limited, or misconfigured, the service falls back to the user's raw inputs (`query.Title`, `query.Author`, tokenised `FreeText`) so a Gemini failure never silently returns zero results. Open Library search continues independently.
+If Gemini is unavailable, rate-limited, or misconfigured:
+
+- `ExtractFieldsAsync` returns an empty `ExtractedFields`.
+- The fallback copies `query.Title` / `query.Author` directly into the extracted fields with `FieldSource.UserInput`, so the full user-input weights are applied in scoring.
+- `query.FreeText` tokens become fallback keywords.
+- Open Library search continues independently — a Gemini failure never silently produces zero results.
 
 ---
 
@@ -140,7 +182,7 @@ If Gemini is unavailable, rate-limited, or misconfigured, the service falls back
 ### Prerequisites
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
-- A [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key) � free tier, no billing required
+- A [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key) — free tier, no billing required
 
 ### 1. Clone
 
@@ -158,7 +200,7 @@ dotnet user-secrets set "Gemini:ApiKey" "YOUR_API_KEY_HERE"
 
 This stores the key in your local user secrets store and is never committed to source control. The `appsettings.json` `Gemini:ApiKey` field is intentionally left blank.
 
-> The default model is `gemini-2.0-flash`. To use a different model, also run:
+> The default model is `gemini-2.5-flash`. To use a different model, also run:
 > `dotnet user-secrets set "Gemini:Model" "gemini-2.0-flash-lite"`
 
 ### 3. Run the web app
@@ -171,13 +213,15 @@ Open `https://localhost:7117` (or the URL shown in the terminal).
 
 ### 4. Run the sandbox (optional)
 
-The sandbox is a console test harness that runs hardcoded queries against the full service stack without the browser or API layer:
+The sandbox is a console app to serve as a manual test harness that runs hardcoded queries against the full service stack without the browser or API layer.
+ This was the playground for development and remains available for manual/interactive experimentation, but all core logic is covered by unit tests in `FindThatBook.Tests`.
+ It is not necessary to run, but if so desired:
 
 ```bash
 dotnet run --project FindThatBookSandbox
 ```
 
-It shares the same user secrets store as the web app � no extra key setup needed. Edit `FindThatBookSandbox/Program.cs` to add your own test cases.
+It shares the same user secrets store as the web app — no extra key setup needed. Edit `FindThatBookSandbox/Program.cs` to add your own test cases.
 
 ---
 
@@ -185,28 +229,45 @@ It shares the same user secrets store as the web app � no extra key setup needed
 
 ```
 FindThatBook/
-??? Controllers/
-?   ??? HomeController.cs              # Serves Privacy + Error MVC views
-?   ??? Api/SearchController.cs        # POST /api/search ? JSON
-??? Models/
-?   ??? SearchQuery.cs                 # Input: Title?, Author?, FreeText?
-?   ??? ExtractedFields.cs             # AI output: title?, author?, keywords[], suggestions[]
-?   ??? BookCandidate.cs               # One result + MatchTier + MatchScore + Explanation
-?   ??? SearchResult.cs                # Response wrapper
-?   ??? OpenLibrary/                   # OL API response DTOs
-?   ??? Gemini/                        # Gemini API request/response DTOs
-??? Services/
-?   ??? TextNormalizer.cs              # Normalize(), IsNearMatch(), TokenMatchRatio()
-?   ??? IOpenLibraryService.cs / OpenLibraryService.cs
-?   ??? IGeminiService.cs / GeminiService.cs
-?   ??? GeminiOptions.cs               # Config: Gemini:ApiKey, Gemini:Model
-?   ??? IBookSearchService.cs / BookSearchService.cs
-??? Pages/
-    ??? Index.cshtml                   # Search form + result cards
-    ??? Index.cshtml.cs                # PageModel with [BindProperty] SearchQuery
+├── Controllers/
+│   ├── HomeController.cs              # Serves Privacy + Error MVC views
+│   └── Api/SearchController.cs        # POST /api/search -> JSON
+├── Models/
+│   ├── SearchQuery.cs                 # Input: Title?, Author?, FreeText?
+│   ├── ExtractedFields.cs             # AI output + FieldSource (UserInput vs AiExtracted)
+│   ├── BookCandidate.cs               # One result + MatchTier + MatchScore + Explanation
+│   ├── SearchResult.cs                # Response wrapper
+│   ├── OpenLibrary/                   # OL API response DTOs
+│   └── Gemini/                        # Gemini API request/response DTOs
+├── Prompts/
+│   ├── extraction.md                  # Extraction prompt template ({{USER_INPUT}} placeholder)
+│   └── explanation.md                 # Explanation prompt template (named placeholders)
+├── Services/
+│   ├── TextNormalizer.cs              # Normalize(), IsNearMatch(), TokenMatchRatio()
+│   ├── IStringSimilarity.cs           # Strategy interface: Similarity(a,b) -> [0.0, 1.0]
+│   ├── LevenshteinSimilarity.cs       # Default: 1 - editDist / max(|a|,|b|)
+│   ├── JaroWinklerSimilarity.cs       # Alternative: Jaro + common-prefix boost
+│   ├── IPromptProvider.cs             # Interface: ExtractionTemplate, ExplanationTemplate
+│   ├── FilePromptProvider.cs          # Loads .md prompts from Prompts/ at startup
+│   ├── GeminiOptions.cs               # Config: ApiKey, Model, ExtractionPromptFile, ExplanationPromptFile
+│   ├── IOpenLibraryService.cs / OpenLibraryService.cs
+│   ├── IGeminiService.cs / GeminiService.cs
+│   └── IBookSearchService.cs / BookSearchService.cs
+└── Pages/
+    ├── Index.cshtml                   # Search form + result cards (tier badge, score chip, Gemini explanation)
+    └── Index.cshtml.cs                # PageModel with [BindProperty] SearchQuery
 
 FindThatBookSandbox/
-??? Program.cs                         # Console test harness
+└── Program.cs                         # Console app as sandbox for manual testing against live APIs
+
+FindThatBook.Tests/                    # xUnit + Moq unit test project
+├── TextNormalizerTests.cs
+├── OpenLibraryServiceTests.cs
+├── GeminiServiceTests.cs
+├── BookSearchServiceTests.cs
+├── StringSimilarityTests.cs
+└── Helpers/
+    └── TestHttpMessageHandler.cs
 ```
 
 ---
@@ -215,7 +276,7 @@ FindThatBookSandbox/
 
 ### `POST /api/search`
 
-**Request** (`application/json`) � at least one field must be non-empty:
+**Request** (`application/json`) — at least one field must be non-empty:
 
 ```json
 {
@@ -232,7 +293,9 @@ FindThatBookSandbox/
   "originalQuery": "title: tale two cities | author: dickens",
   "extractedFields": {
     "title": "A Tale of Two Cities",
+    "titleSource": 0,
     "author": "Charles Dickens",
+    "authorSource": 0,
     "keywords": [],
     "suggestions": []
   },
@@ -245,7 +308,7 @@ FindThatBookSandbox/
       "workId": "/works/OL118421W",
       "openLibraryUrl": "https://openlibrary.org/works/OL118421W",
       "coverUrl": "https://covers.openlibrary.org/b/id/8739161-M.jpg",
-      "explanation": "Exact title and author match � Charles Dickens is confirmed as the primary author.",
+      "explanation": "Exact title and author match — Charles Dickens is confirmed as the primary author.",
       "matchTier": 1,
       "matchScore": 1.20
     }
@@ -254,30 +317,29 @@ FindThatBookSandbox/
 }
 ```
 
+`titleSource` / `authorSource`: `0` = `UserInput` (from explicit field), `1` = `AiExtracted` (inferred from free-text).
+
 ---
 
 ## Testing Strategy
 
-The project currently relies on **manual integration testing** via the sandbox console app, which covers the main query types:
+The `FindThatBook.Tests` project (xUnit + Moq, 96 tests) covers all service layers without hitting any external API.
 
-- Exact title + primary author
-- Exact title + mismatched/wrong author (validates title-priority scoring)
-- Author-only queries (validates author fallback path)
-- Free-text / vague queries (validates AI suggestion path)
-- Noisy multi-token input (validates normalization and near-match scoring)
-
-### Unit test candidates (future `FindThatBook.Tests` project)
-
-| Component | What to test |
+| Suite | What is covered |
 |---|---|
-| `TextNormalizer` | Diacritic stripping, punctuation removal, `TokenMatchRatio` boundaries |
-| `BookSearchService.CalculateScore` | Formula correctness: title-only, author-only, both, partial, contributor discount |
-| `BookSearchService.DetermineTier` | All 7 tier branches; primary vs contributor distinction |
-| `OpenLibraryService` | Mocked `HttpClient`: search, work detail, author detail, author works responses |
-| `GeminiService` | Mocked 200/404/timeout; JSON parse failure returns empty `ExtractedFields` |
-| `IndexModel.OnPostAsync` | Empty query validation; result rendered on valid POST |
+| `TextNormalizerTests` | `Normalize`, `IsNearMatch`, `TokenMatchRatio` — null/whitespace, diacritics, case, partial token ratios |
+| `OpenLibraryServiceTests` | All 5 interface methods: URL/parameter construction, deserialization, HTTP error resilience, cover URL format |
+| `GeminiServiceTests` | `ExtractFieldsAsync` / `GenerateExplanationAsync` — success path, invalid JSON, HTTP failure, `FieldSource` stamping for explicit vs free-text input |
+| `BookSearchServiceTests` | Happy path, Gemini fallback, deduplication by WorkId, `FieldSource` scoring discount, mismatched title/author regression, error propagation, candidate field population |
+| `StringSimilarityTests` | `LevenshteinSimilarity` and `JaroWinklerSimilarity` — edge cases (empty, identical), exact numeric values, symmetry, ordering invariants, unit-range guarantee |
 
-Mocking `IOpenLibraryService` and `IGeminiService` via interfaces allows `BookSearchService` to be tested entirely without network calls.
+Run all tests:
+
+```bash
+dotnet test FindThatBook.Tests
+```
+
+
 
 ---
 
@@ -288,14 +350,16 @@ Mocking `IOpenLibraryService` and `IGeminiService` via interfaces allows `BookSe
 Planned target: **Azure App Service (Free F1 tier)**
 
 Steps:
-1. Right-click `FindThatBook` in Visual Studio ? **Publish ? Azure ? Azure App Service (Windows)**
-2. Create a new App Service � Free F1 tier is sufficient for a demo
-3. In Azure Portal ? App Service ? **Configuration ? Application Settings**, add:
+1. Right-click `FindThatBook` in Visual Studio → **Publish → Azure → Azure App Service (Windows)**
+2. Create a new App Service — Free F1 tier is sufficient for a demo
+3. In Azure Portal → App Service → **Configuration → Application Settings**, add:
    ```
-   Gemini__ApiKey   =  <your key>
-   Gemini__Model    =  gemini-2.0-flash
+   Gemini__ApiKey                =  <your key>
+   Gemini__Model                 =  gemini-2.5-flash
+   Gemini__ExtractionPromptFile  =  extraction.md
+   Gemini__ExplanationPromptFile =  explanation.md
    ```
-   (Double underscore maps to `Gemini:ApiKey` in .NET configuration hierarchy)
+   (Double underscore maps to `Gemini:ApiKey` etc. in .NET configuration hierarchy)
 4. Publish
 
 ---
@@ -303,17 +367,23 @@ Steps:
 ## Future Improvements
 
 ### Search quality
-- **Ingest Open Library data dumps** � OL publishes full data exports (~20 GB). Parsing titles and authors into a local n-gram index (e.g. Elasticsearch) would eliminate rate-limit constraints, remove multi-hop API latency, and enable proper fuzzy-string distance metrics (Levenshtein, BM25). This would be the single highest-impact improvement for a production system.
-- **Gemini re-ranking pass** � after collecting candidates, send the full list back to Gemini in a single call and ask it to re-order with chain-of-thought rationale. Currently explanations are generated per candidate but the ordering is determined purely by the scoring formula.
-- **Subtitle normalization** � *The Hobbit* vs *There and Back Again* disambiguation. Token matching partially handles this but a dedicated subtitle-strip step would improve precision.
-- **ISBN / edition lookup** � a user-supplied ISBN could bypass fuzzy matching entirely via the OL Books API (`/isbn/{isbn}.json`).
+- **Ingest Open Library data dumps** — OL publishes full data exports (~20 GB). Parsing titles and authors into a local inverted index (e.g. Elasticsearch + BM25) would eliminate rate-limit constraints and remove multi-hop API latency. Levenshtein similarity is already applied locally; a proper index would be the step-change improvement for recall and precision.
+- **Gemini re-ranking pass** — after collecting candidates, send the full ranked list back to Gemini in a single call and ask it to re-order with chain-of-thought rationale. Currently explanations are generated per candidate but ordering is determined purely by the scoring formula.
+- **Subtitle normalization** — *The Hobbit* vs *There and Back Again* disambiguation. Token matching partially handles this but a dedicated subtitle-strip step would improve precision.
+- **ISBN / edition lookup** — a user-supplied ISBN could bypass fuzzy matching entirely via the OL Books API (`/isbn/{isbn}.json`).
 
-### Reliability & performance
-- **Resilience policies (Polly)** � Open Library occasionally returns 503. Adding retry + exponential backoff via `Microsoft.Extensions.Http.Resilience` (built into .NET 8) would make the service more robust without much code.
-- **Author lookup caching** � `/authors/{id}.json` calls repeat across searches. A short-lived `IMemoryCache` keyed on author ID would significantly reduce Open Library call volume and latency.
-- **Gemini streaming** � `streamGenerateContent` would allow explanation text to appear progressively rather than waiting for all 5 to complete before the page renders.
+### Reliability, Performance, and Scalability
+- **Resilience policies (Polly)** — Open Library occasionally returns 503. Adding retry + exponential backoff via `Microsoft.Extensions.Http.Resilience` (built into .NET 8) would make the service more robust without much code.
+- **Author lookup caching** — `/authors/{id}.json` calls repeat across searches. A short-lived `IMemoryCache` keyed on author ID would significantly reduce Open Library call volume and latency.
+- **Gemini streaming** — `streamGenerateContent` would allow explanation text to appear progressively rather than waiting for all 5 explanations to complete before the page renders.
+- **Background indexing** — if ingesting OL data dumps, the web app could trigger a background indexing process on startup or via an admin endpoint, with health checks to indicate when the index is ready.
+- **Caching layer** — a more robust caching layer (e.g. Redis) could store popular queries and their results, or even the full OL API responses, to speed up common searches and reduce load on both Open Library and Gemini.
+- **Rate limiting and circuit breaking** — to prevent cascading failures if Open Library or Gemini become unresponsive, rate limiting and circuit breaker patterns could be implemented using `Microsoft.Extensions.Http.Resilience` policies.
+- **N-gram indexing** — for a more performant fuzzy search without a full external search engine, an n-gram index could be built in-memory on startup (especially if we ingest OL data dumps) to quickly narrow down candidate titles/authors before, or candidate works after querying OL.
+- **Cache-Control headers** — appropriate caching headers on the API response would allow client-side caching of popular queries, and CDN caching if deployed to a platform that supports it.
+- **Pagination** — for queries that return many candidates, the API could be redesigned to return results in pages, with the frontend requesting additional pages as the user scrolls. This would reduce initial latency and allow Gemini explanations to be generated on-demand for visible candidates.
+- **Horizontal and vertical scaling** — while the Free F1 tier of Azure App Service is sufficient for a demo, a production deployment would benefit from scaling out to multiple instances and/or upgrading to a more powerful tier to handle increased traffic and reduce latency.
 
 ### Developer experience
-- **Formal test project** � replace the sandbox with an `xUnit` + `NSubstitute` project. See [Testing Strategy](#testing-strategy) for the full candidate list.
-- **OpenAPI / Swagger** � `Swashbuckle.AspNetCore` would auto-generate interactive API docs for `/api/search`.
-- **Docker support** � a `Dockerfile` would enable deployment to Azure Container Apps, Railway, or any container host as an alternative to App Service.
+- **OpenAPI / Swagger** — `Swashbuckle.AspNetCore` would auto-generate interactive API docs for `/api/search`.
+- **Docker support** — a `Dockerfile` would enable deployment to Azure Container Apps, Railway, or any container host as an alternative to App Service.
