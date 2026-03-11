@@ -415,5 +415,108 @@ namespace FindThatBook.Tests
             Assert.NotEmpty(result.Candidates);
             Assert.Equal("Hamlet", result.Candidates[0].Title);
         }
+
+        // ------------------------------------------------------------------
+        // SearchAsync — verbatim free-text search (quote queries)
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SearchAsync_ReturnsCandidates_FromVerbatimFreeTextSearch()
+        {
+            // Gemini extracts sparse keywords ["best","times"] from a famous quote but no title.
+            // The combined keyword search misses the book; the verbatim phrase search hits it.
+            var taleDoc = new OlSearchDoc
+            {
+                Key = "/works/OL118421W",
+                Title = "A Tale of Two Cities",
+                AuthorName = ["Charles Dickens"]
+            };
+            var taleDetails = new OlWorkDetails
+            {
+                Key = "/works/OL118421W",
+                Title = "A Tale of Two Cities",
+                Authors = [new OlWorkAuthorEntry { Author = new OlKeyRef { Key = "/authors/OL27319A" }, Role = null }]
+            };
+
+            var olMock = new Mock<IOpenLibraryService>();
+
+            // Sparse keyword search (keywords without spaces) → empty
+            olMock.Setup(m => m.SearchAsync(
+                    null, null,
+                    It.Is<IEnumerable<string>?>(kw => kw != null && !kw.Any(k => k.Contains(' '))),
+                    It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse());
+
+            // Verbatim phrase search (single keyword containing spaces) → returns the book
+            olMock.Setup(m => m.SearchAsync(
+                    null, null,
+                    It.Is<IEnumerable<string>?>(kw => kw != null && kw.Any(k => k.Contains(' '))),
+                    It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse { NumFound = 1, Docs = [taleDoc] });
+
+            olMock.Setup(m => m.GetWorkAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(taleDetails);
+            olMock.Setup(m => m.GetAuthorAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlAuthorDetails { Name = "Charles Dickens" });
+            olMock.Setup(m => m.GetCoverUrl(It.IsAny<int>(), It.IsAny<string>()))
+                .Returns("https://example.com/cover.jpg");
+
+            var geminiMock = new Mock<IGeminiService>();
+            geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields { Keywords = ["best", "times"] });
+            geminiMock.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("Famous opening line from A Tale of Two Cities.");
+
+            var result = await CreateService(olMock, geminiMock)
+                .SearchAsync(new SearchQuery { FreeText = "it was the best of times it was the worst of times" });
+
+            Assert.False(result.HasError);
+            Assert.NotEmpty(result.Candidates);
+            Assert.Equal("A Tale of Two Cities", result.Candidates[0].Title);
+
+            // Verify the verbatim phrase (single element with spaces) was sent to OL
+            olMock.Verify(m => m.SearchAsync(
+                null, null,
+                It.Is<IEnumerable<string>?>(kw => kw != null && kw.Any(k => k.Contains(' '))),
+                It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // ------------------------------------------------------------------
+        // SearchAsync — score = 0 filter
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SearchAsync_ExcludesCandidates_WithZeroScore()
+        {
+            // "zzz" vs "abc": every character differs, Levenshtein distance = 3 = max(3,3),
+            // so similarity = 1 - 3/3 = 0.0 exactly. titleScore=0, authorScore=0,
+            // keywordScore=0 → MatchScore=0. The > 0 filter must exclude this candidate.
+            var zeroMatchDoc = new OlSearchDoc { Key = "/works/OLzeroW", Title = "abc" };
+            var zeroMatchDetails = new OlWorkDetails
+            {
+                Key = "/works/OLzeroW",
+                Title = "abc",
+                Authors = [new OlWorkAuthorEntry { Author = new OlKeyRef { Key = "/authors/a" }, Role = null }]
+            };
+
+            var olMock = DefaultOpenLibraryMock(
+                doc: zeroMatchDoc,
+                workDetails: zeroMatchDetails,
+                authorDetails: new OlAuthorDetails { Name = "Someone" });
+
+            var geminiMock = new Mock<IGeminiService>();
+            geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields { Title = "zzz", TitleSource = FieldSource.UserInput });
+            geminiMock.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("explanation");
+
+            var result = await CreateService(olMock, geminiMock)
+                .SearchAsync(new SearchQuery { Title = "zzz" });
+
+            // The candidate scored exactly 0 and must be excluded from results.
+            Assert.Empty(result.Candidates);
+        }
     }
 }

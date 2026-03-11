@@ -10,6 +10,11 @@ namespace FindThatBook.Services
         private const int OlSearchLimit = 10;
         private const int DetailFetchLimit = 5;    // max work-detail + author calls
 
+        // Hard ceiling for one full search. Individual HttpClient timeouts are per-request;
+        // this guards against cumulative fan-out (up to 7 parallel OL calls + 5 Gemini calls)
+        // exceeding the total time a user is willing to wait.
+        private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(60);
+
         private readonly IOpenLibraryService _openLibrary;
         private readonly IGeminiService _gemini;
         private readonly IStringSimilarity _stringSimilarity;
@@ -33,6 +38,12 @@ namespace FindThatBook.Services
 
         public async Task<SearchResult> SearchAsync(SearchQuery query, CancellationToken ct = default)
         {
+            // Link the caller's token with a hard deadline so cumulative fan-out
+            // (multiple parallel OL + Gemini calls) never blocks indefinitely.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(SearchTimeout);
+            ct = cts.Token;
+
             var result = new SearchResult { OriginalQuery = BuildOriginalQuery(query) };
 
             try
@@ -58,7 +69,7 @@ namespace FindThatBook.Services
                     fields.Keywords = [.. query.FreeText.Split(' ', StringSplitOptions.RemoveEmptyEntries)];
 
                 // 2. Collect raw OL docs from field-based search + per-suggestion searches
-                var rawDocs = await CollectSearchResultsAsync(fields, ct);
+                var rawDocs = await CollectSearchResultsAsync(fields, query.FreeText, ct);
 
                 // 3. Resolve authors + classify into BookCandidates
                 var candidates = await BuildCandidatesAsync(rawDocs, fields, ct);
@@ -71,10 +82,13 @@ namespace FindThatBook.Services
                     candidates.AddRange(authorWorks);
                 }
 
-                // 5. De-dup by WorkId (keep highest score per work), sort by score descending, cap
+                // 5. De-dup by WorkId (keep highest score per work), drop zero-score
+                //    candidates (no matching evidence against any extracted field), then
+                //    sort by score descending and cap at MaxCandidates.
                 result.Candidates = candidates
                     .GroupBy(c => c.WorkId, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.OrderByDescending(c => c.MatchScore).First())
+                    .Where(c => c.MatchScore > 0)
                     .OrderByDescending(c => c.MatchScore)
                     .ThenBy(c => (int)c.MatchTier)
                     .Take(MaxCandidates)
@@ -98,7 +112,7 @@ namespace FindThatBook.Services
         // -------------------------------------------------------------------------
 
         private async Task<List<(OlSearchDoc Doc, bool FromAiSuggestion, string AiReason)>>
-            CollectSearchResultsAsync(ExtractedFields fields, CancellationToken ct)
+            CollectSearchResultsAsync(ExtractedFields fields, string? freeText, CancellationToken ct)
         {
             var all = new List<(OlSearchDoc, bool, string)>();
             var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -110,29 +124,51 @@ namespace FindThatBook.Services
                         all.Add((doc, fromAi, reason));
             }
 
-            bool hasTitle = !string.IsNullOrWhiteSpace(fields.Title);
-            bool hasAuthor = !string.IsNullOrWhiteSpace(fields.Author);
+            bool hasTitle    = !string.IsNullOrWhiteSpace(fields.Title);
+            bool hasAuthor   = !string.IsNullOrWhiteSpace(fields.Author);
             bool hasKeywords = fields.Keywords.Count > 0;
 
-            // Primary combined search
-            if (hasTitle || hasAuthor || hasKeywords)
-            {
-                var primary = await _openLibrary.SearchAsync(
-                    fields.Title, fields.Author, fields.Keywords, OlSearchLimit, ct);
-                AddDocs(primary.Docs, false, string.Empty);
-            }
+            // Build the structured search tasks. Each present field gets its own solo search
+            // so mismatched pairs (e.g. title "Hamlet" + author "Verne") still surface results
+            // for whichever field is correct. The combined search handles cases where all three
+            // fields reinforce each other. All tasks run in parallel; dedup via seenKeys
+            // prevents the same work appearing more than once across the result set.
+            //
+            //  hasTitle  →  title-only
+            //  hasAuthor →  author-only
+            //  hasKeywords → keywords-only
+            //  any of the above →  combined (title + author + keywords)
+            //  !hasTitle + freeText →  verbatim phrase (fromAi=true for min-score guarantee)
+            //
+            // Maximum 5 structured OL calls + up to 3 suggestion calls = 8 total, all parallel.
 
-            // When both title and author are provided, also search each field independently
-            // in parallel. A combined search for a mismatched pair (e.g. title "Hamlet" +
-            // author "Verne") returns zero results, but independent searches still surface
-            // the correct book for each field. Dedup via seenKeys prevents double-counting.
-            if (hasTitle && hasAuthor)
+            var tasks = new List<(Task<OlSearchResponse> Task, bool FromAi, string Reason)>();
+
+            if (hasTitle)
+                tasks.Add((_openLibrary.SearchAsync(fields.Title, null, null, OlSearchLimit, ct),
+                    false, string.Empty));
+
+            if (hasAuthor)
+                tasks.Add((_openLibrary.SearchAsync(null, fields.Author, null, OlSearchLimit, ct),
+                    false, string.Empty));
+
+            if (hasKeywords)
+                tasks.Add((_openLibrary.SearchAsync(null, null, fields.Keywords, OlSearchLimit, ct),
+                    false, string.Empty));
+
+            if (hasTitle || hasAuthor || hasKeywords)
+                tasks.Add((_openLibrary.SearchAsync(fields.Title, fields.Author, fields.Keywords, OlSearchLimit, ct),
+                    false, string.Empty));
+
+            if (!hasTitle && !string.IsNullOrWhiteSpace(freeText))
+                tasks.Add((_openLibrary.SearchAsync(null, null, [freeText!], OlSearchLimit, ct),
+                    true, "verbatim freetext"));
+
+            if (tasks.Count > 0)
             {
-                var titleOnlyTask  = _openLibrary.SearchAsync(fields.Title, null,          null, OlSearchLimit / 2, ct);
-                var authorOnlyTask = _openLibrary.SearchAsync(null,          fields.Author, null, OlSearchLimit / 2, ct);
-                await Task.WhenAll(titleOnlyTask, authorOnlyTask);
-                AddDocs(titleOnlyTask.Result.Docs,  false, string.Empty);
-                AddDocs(authorOnlyTask.Result.Docs, false, string.Empty);
+                await Task.WhenAll(tasks.Select(t => t.Task));
+                foreach (var (task, fromAi, reason) in tasks)
+                    AddDocs(task.Result.Docs, fromAi, reason);
             }
 
             // Per-suggestion searches run in parallel (capped at 3 suggestions)
@@ -184,6 +220,7 @@ namespace FindThatBook.Services
                     await ResolveAuthorsAsync(r.Doc, r.Details, ct);
 
                 var tier = DetermineTier(r.Doc, primaryAuthors, contributors, fields, r.FromAiSuggestion);
+                var score = CalculateScore(r.Doc, primaryAuthors, contributors, fields);
 
                 return new BookCandidate
                 {
@@ -196,7 +233,10 @@ namespace FindThatBook.Services
                         ? _openLibrary.GetCoverUrl(r.Doc.CoverId.Value)
                         : GetCoverFromDetails(r.Details),
                     MatchTier  = tier,
-                    MatchScore = CalculateScore(r.Doc, primaryAuthors, contributors, fields)
+                    // AI-sourced candidates (suggestions, verbatim phrase) get a guaranteed
+                    // minimum of 0.1 so they survive the > 0 filter even when extracted
+                    // keywords happen not to appear in the returned title.
+                    MatchScore = r.FromAiSuggestion ? Math.Max(score, 0.1) : score
                 };
             }));
 

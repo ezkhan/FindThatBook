@@ -16,7 +16,8 @@ namespace FindThatBook
             {
                 client.BaseAddress = new Uri("https://openlibrary.org/");
                 client.DefaultRequestHeaders.Add("Accept", "application/json");
-                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("User-Agent", "FindThatBook (ezafat.khan+infotrack@gmail.com)"); // NOTE specifying a user agent increases Open Library's API rate limit 3x
+                client.Timeout = TimeSpan.FromSeconds(25);
             });
 
             builder.Services.Configure<GeminiOptions>(
@@ -28,7 +29,7 @@ namespace FindThatBook
             builder.Services.AddHttpClient<IGeminiService, GeminiService>(client =>
             {
                 client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/");
-                client.Timeout = TimeSpan.FromSeconds(30);
+                client.Timeout = TimeSpan.FromSeconds(45);
             });
 
             builder.Services.AddScoped<IBookSearchService, BookSearchService>();
