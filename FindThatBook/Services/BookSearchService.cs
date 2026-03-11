@@ -12,15 +12,18 @@ namespace FindThatBook.Services
 
         private readonly IOpenLibraryService _openLibrary;
         private readonly IGeminiService _gemini;
+        private readonly IStringSimilarity _stringSimilarity;
         private readonly ILogger<BookSearchService> _logger;
 
         public BookSearchService(
             IOpenLibraryService openLibrary,
             IGeminiService gemini,
+            IStringSimilarity stringSimilarity,
             ILogger<BookSearchService> logger)
         {
             _openLibrary = openLibrary;
             _gemini = gemini;
+            _stringSimilarity = stringSimilarity;
             _logger = logger;
         }
 
@@ -41,9 +44,15 @@ namespace FindThatBook.Services
                 // Fallback: if AI returned nothing for a field the user explicitly provided,
                 // use the raw input directly so a Gemini failure never silently kills the search
                 if (string.IsNullOrWhiteSpace(fields.Title) && !string.IsNullOrWhiteSpace(query.Title))
+                {
                     fields.Title = query.Title;
+                    fields.TitleSource = FieldSource.UserInput;
+                }
                 if (string.IsNullOrWhiteSpace(fields.Author) && !string.IsNullOrWhiteSpace(query.Author))
+                {
                     fields.Author = query.Author;
+                    fields.AuthorSource = FieldSource.UserInput;
+                }
                 if (fields.Title == null && fields.Author == null && fields.Keywords.Count == 0
                     && !string.IsNullOrWhiteSpace(query.FreeText))
                     fields.Keywords = [.. query.FreeText.Split(' ', StringSplitOptions.RemoveEmptyEntries)];
@@ -105,12 +114,25 @@ namespace FindThatBook.Services
             bool hasAuthor = !string.IsNullOrWhiteSpace(fields.Author);
             bool hasKeywords = fields.Keywords.Count > 0;
 
-            // Primary search using whatever structured fields we have
+            // Primary combined search
             if (hasTitle || hasAuthor || hasKeywords)
             {
                 var primary = await _openLibrary.SearchAsync(
                     fields.Title, fields.Author, fields.Keywords, OlSearchLimit, ct);
                 AddDocs(primary.Docs, false, string.Empty);
+            }
+
+            // When both title and author are provided, also search each field independently
+            // in parallel. A combined search for a mismatched pair (e.g. title "Hamlet" +
+            // author "Verne") returns zero results, but independent searches still surface
+            // the correct book for each field. Dedup via seenKeys prevents double-counting.
+            if (hasTitle && hasAuthor)
+            {
+                var titleOnlyTask  = _openLibrary.SearchAsync(fields.Title, null,          null, OlSearchLimit / 2, ct);
+                var authorOnlyTask = _openLibrary.SearchAsync(null,          fields.Author, null, OlSearchLimit / 2, ct);
+                await Task.WhenAll(titleOnlyTask, authorOnlyTask);
+                AddDocs(titleOnlyTask.Result.Docs,  false, string.Empty);
+                AddDocs(authorOnlyTask.Result.Docs, false, string.Empty);
             }
 
             // Per-suggestion searches run in parallel (capped at 3 suggestions)
@@ -286,11 +308,14 @@ namespace FindThatBook.Services
 
         /// <summary>
         /// Computes a weighted relevance score for a candidate against the extracted query fields.
-        /// Formula: (titleScore × 0.7) + (authorScore × 0.5) + (keywordScore × 0.3)
-        /// Weights ensure a title match always outranks a pure author match.
-        /// Scores above 1.0 are possible when both title and author match strongly.
+        /// Formula: (userInputTitleMatch × 0.7) + (geminiTitleMatch × 0.6)
+        ///        + (userInputAuthorMatch × 0.5) + (geminiAuthorMatch × 0.4)
+        ///        + (geminiKeywordMatch × 0.3)
+        /// Exact matches score 1.0; partial matches are scored by <see cref="IStringSimilarity"/>.
+        /// User-supplied fields carry higher weight than AI-inferred equivalents.
+        /// Scores above 1.0 are possible when title and author both match strongly.
         /// </summary>
-        private static double CalculateScore(
+        private double CalculateScore(
             OlSearchDoc doc,
             List<string> primaryAuthors,
             List<string> contributors,
@@ -304,8 +329,8 @@ namespace FindThatBook.Services
                 var normQuery = TextNormalizer.Normalize(fields.Title);
 
                 titleScore = normDoc == normQuery
-                    ? 1.0                                                        // exact
-                    : TextNormalizer.TokenMatchRatio(fields.Title, doc.Title);  // partial
+                    ? 1.0
+                    : _stringSimilarity.Similarity(normQuery, normDoc);
             }
 
             // --- Author score [0.0–1.0] ---
@@ -319,13 +344,14 @@ namespace FindThatBook.Services
                     authorScore = 0.6;
                 else
                 {
+                    var normAuthorQuery = TextNormalizer.Normalize(fields.Author);
                     var allAuthors = primaryAuthors
                         .Concat(contributors.Select(c => c.Split('(')[0].Trim()));
                     var best = allAuthors
-                        .Select(a => TextNormalizer.TokenMatchRatio(fields.Author, a))
+                        .Select(a => _stringSimilarity.Similarity(normAuthorQuery, TextNormalizer.Normalize(a)))
                         .DefaultIfEmpty(0.0)
                         .Max();
-                    authorScore = best * 0.5;   // partial token overlap, discounted
+                    authorScore = best * 0.5;   // partial match, discounted
                 }
             }
 
@@ -340,7 +366,11 @@ namespace FindThatBook.Services
                 keywordScore = (double)matched / fields.Keywords.Count;
             }
 
-            return (titleScore * 0.7) + (authorScore * 0.5) + (keywordScore * 0.3);
+            // User-supplied fields carry higher weight than AI-inferred equivalents.
+            double titleWeight  = fields.TitleSource  == FieldSource.UserInput ? 0.7 : 0.6;
+            double authorWeight = fields.AuthorSource == FieldSource.UserInput ? 0.5 : 0.4;
+
+            return (titleScore * titleWeight) + (authorScore * authorWeight) + (keywordScore * 0.3);
         }
 
         // -------------------------------------------------------------------------

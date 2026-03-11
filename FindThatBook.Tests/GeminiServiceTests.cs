@@ -6,6 +6,7 @@ using FindThatBook.Services;
 using FindThatBook.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace FindThatBook.Tests
 {
@@ -18,7 +19,11 @@ namespace FindThatBook.Tests
         {
             var client = new HttpClient(handler) { BaseAddress = new Uri("https://generativelanguage.googleapis.com/") };
             var options = Options.Create(new GeminiOptions { ApiKey = apiKey, Model = model });
-            return new GeminiService(client, options, NullLogger<GeminiService>.Instance);
+            var promptProvider = new Mock<IPromptProvider>();
+            promptProvider.Setup(p => p.ExtractionTemplate).Returns("{{USER_INPUT}}");
+            promptProvider.Setup(p => p.ExplanationTemplate)
+                .Returns("{{ORIGINAL_QUERY}} {{BOOK_TITLE}} {{AUTHORS}}{{CONTRIBUTORS_LINE}} {{FIRST_PUBLISHED}} {{MATCH_BASIS}}");
+            return new GeminiService(client, options, promptProvider.Object, NullLogger<GeminiService>.Instance);
         }
 
         private static string BuildGeminiResponse(string text) =>
@@ -112,6 +117,44 @@ namespace FindThatBook.Tests
 
             Assert.Null(result.Title);
             Assert.Null(result.Author);
+        }
+
+        [Fact]
+        public async Task ExtractFieldsAsync_SetsTitleSource_UserInput_WhenQueryHasExplicitTitle()
+        {
+            var extractionJson = JsonSerializer.Serialize(new
+            {
+                title = "The Hobbit",
+                author = "J.R.R. Tolkien",
+                keywords = Array.Empty<string>(),
+                suggestions = Array.Empty<object>()
+            });
+            var handler = TestHttpMessageHandler.ReturnJson(BuildGeminiResponse(extractionJson));
+            var svc = CreateService(handler);
+
+            var result = await svc.ExtractFieldsAsync(new SearchQuery { Title = "Hobbit", Author = "Tolkien" });
+
+            Assert.Equal(FieldSource.UserInput, result.TitleSource);
+            Assert.Equal(FieldSource.UserInput, result.AuthorSource);
+        }
+
+        [Fact]
+        public async Task ExtractFieldsAsync_SetsTitleSource_AiExtracted_WhenQueryHasOnlyFreeText()
+        {
+            var extractionJson = JsonSerializer.Serialize(new
+            {
+                title = "The Hobbit",
+                author = "J.R.R. Tolkien",
+                keywords = Array.Empty<string>(),
+                suggestions = Array.Empty<object>()
+            });
+            var handler = TestHttpMessageHandler.ReturnJson(BuildGeminiResponse(extractionJson));
+            var svc = CreateService(handler);
+
+            var result = await svc.ExtractFieldsAsync(new SearchQuery { FreeText = "hobbit tolkien" });
+
+            Assert.Equal(FieldSource.AiExtracted, result.TitleSource);
+            Assert.Equal(FieldSource.AiExtracted, result.AuthorSource);
         }
 
         [Fact]

@@ -36,7 +36,7 @@
                       class="form-control"
                       rows="3"
                       placeholder="e.g. tolkien hobbit illustrated deluxe 1937, or &quot;that book where someone bets they can circle the globe in 80 days&quot;"></textarea>
-            <div class="form-text">Messy, partial, or vague — anything goes.</div>
+            <div class="form-text">Free form inquiery. Messy, partial, or vague — anything goes.</div>
         </div>
 
         <button type="submit" class="btn btn-primary px-4">
@@ -126,6 +126,9 @@
                                             <span class="badge @GetTierBadgeClass(candidate.MatchTier) text-nowrap">
                                                 @GetTierLabel(candidate.MatchTier)
                                             </span>
+                                            <span class="badge bg-light text-dark border text-nowrap" title="user-title × 0.7 + AI-title × 0.6 + user-author × 0.5 + AI-author × 0.4 + keywords × 0.3">
+                                                @candidate.MatchScore.ToString("F2")
+                                            </span>
                                             @if (!string.IsNullOrEmpty(candidate.OpenLibraryUrl))
                                             {
                                                 <a href="@candidate.OpenLibraryUrl"
@@ -140,8 +143,8 @@
 
                                     @if (!string.IsNullOrEmpty(candidate.Explanation))
                                     {
-                                        <p class="card-text mt-2 fst-italic text-secondary">
-                                            &ldquo;@candidate.Explanation&rdquo;
+                                        <p class="card-text mt-2 mb-0 text-secondary">
+                                            <small class="text-muted me-1">✦ Gemini</small><span class="fst-italic">&ldquo;@candidate.Explanation&rdquo;</span>
                                         </p>
                                     }
                                 </div>

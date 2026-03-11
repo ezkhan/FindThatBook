@@ -1,6 +1,19 @@
 namespace FindThatBook.Models
 {
     /// <summary>
+    /// Indicates where a title or author value in <see cref="ExtractedFields"/> originated.
+    /// Used by scoring to weight explicit user input higher than AI-inferred values.
+    /// </summary>
+    public enum FieldSource
+    {
+        /// <summary>Value came from the user's explicit Title or Author input field.</summary>
+        UserInput,
+
+        /// <summary>Value was inferred by the AI from free-text or query context.</summary>
+        AiExtracted
+    }
+
+    /// <summary>
     /// Structured output from the AI service for a given query.
     /// </summary>
     public class ExtractedFields
@@ -8,8 +21,14 @@ namespace FindThatBook.Models
         /// <summary>Normalized title parsed from the query blob.</summary>
         public string? Title { get; set; }
 
+        /// <summary>Whether <see cref="Title"/> came from explicit user input or AI extraction.</summary>
+        public FieldSource TitleSource { get; set; } = FieldSource.AiExtracted;
+
         /// <summary>Normalized author parsed from the query blob.</summary>
         public string? Author { get; set; }
+
+        /// <summary>Whether <see cref="Author"/> came from explicit user input or AI extraction.</summary>
+        public FieldSource AuthorSource { get; set; } = FieldSource.AiExtracted;
 
         public List<string> Keywords { get; set; } = [];
 

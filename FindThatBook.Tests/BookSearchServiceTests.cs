@@ -37,11 +37,15 @@ namespace FindThatBook.Tests
 
         private static BookSearchService CreateService(
             Mock<IOpenLibraryService>? openLibraryMock = null,
-            Mock<IGeminiService>? geminiMock = null)
+            Mock<IGeminiService>? geminiMock = null,
+            IStringSimilarity? stringSimilarity = null)
         {
             var ol = openLibraryMock ?? new Mock<IOpenLibraryService>();
             var gemini = geminiMock ?? new Mock<IGeminiService>();
-            return new BookSearchService(ol.Object, gemini.Object, NullLogger<BookSearchService>.Instance);
+            return new BookSearchService(
+                ol.Object, gemini.Object,
+                stringSimilarity ?? new LevenshteinSimilarity(),
+                NullLogger<BookSearchService>.Instance);
         }
 
         // ------------------------------------------------------------------
@@ -305,6 +309,111 @@ namespace FindThatBook.Tests
 
             Assert.NotEmpty(result.Candidates);
             Assert.Contains("J.R.R. Tolkien", result.Candidates[0].PrimaryAuthors);
+        }
+
+        // ------------------------------------------------------------------
+        // SearchAsync — FieldSource scoring
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SearchAsync_ScoresUserInputTitle_HigherThan_AiExtractedTitle()
+        {            // Run 1: explicit user title → TitleSource = UserInput → full weight (0.7 × 1.0)
+            var geminiUserInput = new Mock<IGeminiService>();
+            geminiUserInput.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields { Title = "The Hobbit", TitleSource = FieldSource.UserInput });
+            geminiUserInput.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("ok");
+
+            // Run 2: AI-inferred title → TitleSource = AiExtracted → discounted weight (0.7 × 0.75)
+            var geminiAiExtracted = new Mock<IGeminiService>();
+            geminiAiExtracted.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields { Title = "The Hobbit", TitleSource = FieldSource.AiExtracted });
+            geminiAiExtracted.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("ok");
+
+            var resultUserInput = await CreateService(DefaultOpenLibraryMock(), geminiUserInput)
+                .SearchAsync(new SearchQuery { Title = "The Hobbit" });
+            var resultAiExtracted = await CreateService(DefaultOpenLibraryMock(), geminiAiExtracted)
+                .SearchAsync(new SearchQuery { FreeText = "small creature goes on an adventure" });
+
+            Assert.NotEmpty(resultUserInput.Candidates);
+            Assert.NotEmpty(resultAiExtracted.Candidates);
+            Assert.True(
+                resultUserInput.Candidates[0].MatchScore > resultAiExtracted.Candidates[0].MatchScore,
+                $"Expected user-input score ({resultUserInput.Candidates[0].MatchScore:F3}) " +
+                $"> AI-extracted score ({resultAiExtracted.Candidates[0].MatchScore:F3})");
+        }
+
+        // ------------------------------------------------------------------
+        // SearchAsync — mismatched title + author (regression)
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SearchAsync_ReturnsCandidates_WhenCombinedTitleAuthorSearchYieldsNoResults()
+        {
+            // Simulate "title: Hamlet, author: Verne" — combined OL search returns nothing,
+            // but the independent title-only search surfaces Hamlet by Shakespeare.
+            var hamletDoc = new OlSearchDoc
+            {
+                Key = "/works/OLHamletW",
+                Title = "Hamlet",
+                AuthorName = ["William Shakespeare"]
+            };
+            var hamletDetails = new OlWorkDetails
+            {
+                Key = "/works/OLHamletW",
+                Title = "Hamlet",
+                Authors = [new OlWorkAuthorEntry { Author = new OlKeyRef { Key = "/authors/shakespeare" }, Role = null }]
+            };
+
+            var olMock = new Mock<IOpenLibraryService>();
+
+            // Combined search (both title and author non-null) → no results
+            olMock.Setup(m => m.SearchAsync(
+                    It.Is<string?>(t => t != null), It.Is<string?>(a => a != null),
+                    It.IsAny<IEnumerable<string>?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse());
+
+            // Title-only search → Hamlet
+            olMock.Setup(m => m.SearchAsync(
+                    It.Is<string?>(t => t != null), It.Is<string?>(a => a == null),
+                    It.IsAny<IEnumerable<string>?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse { NumFound = 1, Docs = [hamletDoc] });
+
+            // Author-only search → no results (or could be Verne works; either is fine)
+            olMock.Setup(m => m.SearchAsync(
+                    It.Is<string?>(t => t == null), It.Is<string?>(a => a != null),
+                    It.IsAny<IEnumerable<string>?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse());
+
+            olMock.Setup(m => m.GetWorkAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(hamletDetails);
+            olMock.Setup(m => m.GetAuthorAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlAuthorDetails { Name = "William Shakespeare" });
+            olMock.Setup(m => m.GetCoverUrl(It.IsAny<int>(), It.IsAny<string>()))
+                .Returns("https://example.com/cover.jpg");
+
+            var geminiMock = new Mock<IGeminiService>();
+            geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields
+                {
+                    Title = "Hamlet",
+                    TitleSource = FieldSource.UserInput,
+                    Author = "Verne",
+                    AuthorSource = FieldSource.UserInput
+                });
+            geminiMock.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("explanation");
+
+            var result = await CreateService(olMock, geminiMock)
+                .SearchAsync(new SearchQuery { Title = "Hamlet", Author = "Verne" });
+
+            Assert.False(result.HasError);
+            Assert.NotEmpty(result.Candidates);
+            Assert.Equal("Hamlet", result.Candidates[0].Title);
         }
     }
 }

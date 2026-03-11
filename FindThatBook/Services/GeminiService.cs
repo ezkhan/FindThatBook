@@ -11,6 +11,7 @@ namespace FindThatBook.Services
     {
         private readonly HttpClient _httpClient;
         private readonly GeminiOptions _options;
+        private readonly IPromptProvider _promptProvider;
         private readonly ILogger<GeminiService> _logger;
 
         private static readonly JsonSerializerOptions CaseInsensitive =
@@ -19,10 +20,12 @@ namespace FindThatBook.Services
         public GeminiService(
             HttpClient httpClient,
             IOptions<GeminiOptions> options,
+            IPromptProvider promptProvider,
             ILogger<GeminiService> logger)
         {
             _httpClient = httpClient;
             _options = options.Value;
+            _promptProvider = promptProvider;
             _logger = logger;
         }
 
@@ -30,49 +33,20 @@ namespace FindThatBook.Services
             SearchQuery query,
             CancellationToken ct = default)
         {
-            var promptLines = new List<string>
-            {
-                "You are a book identification assistant. Analyze the user query and return a JSON object.",
-                "",
-                "User input:"
-            };
+            var userInputLines = new List<string>();
 
             if (!string.IsNullOrWhiteSpace(query.Title))
-                promptLines.Add($"- Explicit title hint (may be partial or misspelled): \"{query.Title}\"");
+                userInputLines.Add($"- Explicit title hint (may be partial or misspelled): \"{query.Title}\"");
 
             if (!string.IsNullOrWhiteSpace(query.Author))
-                promptLines.Add($"- Explicit author hint (may be partial or misspelled): \"{query.Author}\"");
+                userInputLines.Add($"- Explicit author hint (may be partial or misspelled): \"{query.Author}\"");
 
             if (!string.IsNullOrWhiteSpace(query.FreeText))
-                promptLines.Add($"- Free-text input: \"{query.FreeText}\"");
+                userInputLines.Add($"- Free-text input: \"{query.FreeText}\"");
 
-            promptLines.AddRange([
-                "",
-                "Return ONLY a valid JSON object with this exact structure:",
-                "{",
-                "  \"title\": \"<extracted/normalized book title, or null>\",",
-                "  \"author\": \"<extracted/normalized author name, or null>\",",
-                "  \"keywords\": [\"<keyword1>\", \"<keyword2>\"],",
-                "  \"suggestions\": [",
-                "    {",
-                "      \"title\": \"<book title>\",",
-                "      \"author\": \"<author name, or null>\",",
-                "      \"reason\": \"<one sentence citing specific evidence from the query>\"",
-                "    }",
-                "  ]",
-                "}",
-                "",
-                "Rules:",
-                "- title: normalize and extract a book title from the query tokens, or null if none present",
-                "- author: normalize and extract an author name from the query tokens, or null if none present",
-                "- keywords: 2-5 relevant search terms from the query, excluding extracted title/author tokens",
-                "- suggestions: books you recognize from your knowledge that match the query — including matches",
-                "  via plot hints, character names, quotes, themes, or described scenarios. Up to 3, ordered by",
-                "  confidence. Each MUST include a reason grounded in specific query evidence.",
-                "- Do not wrap the JSON in markdown code blocks."
-            ]);
+            var prompt = _promptProvider.ExtractionTemplate
+                .Replace("{{USER_INPUT}}", string.Join('\n', userInputLines));
 
-            var prompt = string.Join('\n', promptLines);
             var text = await CallGeminiAsync(prompt, jsonMode: true, ct);
 
             if (string.IsNullOrWhiteSpace(text))
@@ -86,7 +60,15 @@ namespace FindThatBook.Services
                 return new ExtractedFields
                 {
                     Title = NullIfBlank(raw.Title),
+                    // If the user supplied an explicit title, the extracted value is user-input derived
+                    // even if Gemini normalized it. If it came from free-text analysis it is AI-extracted.
+                    TitleSource = !string.IsNullOrWhiteSpace(query.Title)
+                        ? FieldSource.UserInput
+                        : FieldSource.AiExtracted,
                     Author = NullIfBlank(raw.Author),
+                    AuthorSource = !string.IsNullOrWhiteSpace(query.Author)
+                        ? FieldSource.UserInput
+                        : FieldSource.AiExtracted,
                     Keywords = raw.Keywords ?? [],
                     Suggestions = (raw.Suggestions ?? [])
                         .Where(s => !string.IsNullOrWhiteSpace(s.Title))
@@ -115,24 +97,17 @@ namespace FindThatBook.Services
                 ? string.Join(", ", candidate.PrimaryAuthors)
                 : "unknown author";
 
-            var contributors = candidate.Contributors.Count > 0
+            var contributorsLine = candidate.Contributors.Count > 0
                 ? $" (contributors: {string.Join(", ", candidate.Contributors)})"
                 : string.Empty;
 
-            var prompt = $"""
-                You are a book identification assistant. Write a 1-2 sentence explanation of why this book matches the user's query.
-
-                User query: "{originalQuery}"
-                Book: "{candidate.Title}" by {authors}{contributors}
-                First published: {candidate.FirstPublishYear?.ToString() ?? "unknown"}
-                Match basis: {DescribeMatchTier(candidate.MatchTier)}
-
-                Requirements:
-                - Cite specific evidence from the query (matched title tokens, author name, plot or theme recognition, etc.)
-                - If the match came from AI knowledge rather than keyword parsing, say so briefly
-                - If contributors (illustrators, editors) were relevant to the match, mention the distinction
-                - Plain text only — no JSON, no markdown, no bullet points
-                """;
+            var prompt = _promptProvider.ExplanationTemplate
+                .Replace("{{ORIGINAL_QUERY}}", originalQuery)
+                .Replace("{{BOOK_TITLE}}", candidate.Title)
+                .Replace("{{AUTHORS}}", authors)
+                .Replace("{{CONTRIBUTORS_LINE}}", contributorsLine)
+                .Replace("{{FIRST_PUBLISHED}}", candidate.FirstPublishYear?.ToString() ?? "unknown")
+                .Replace("{{MATCH_BASIS}}", DescribeMatchTier(candidate.MatchTier));
 
             var text = await CallGeminiAsync(prompt, jsonMode: false, ct);
 

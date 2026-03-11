@@ -22,6 +22,9 @@ namespace FindThatBook
             builder.Services.Configure<GeminiOptions>(
                 builder.Configuration.GetSection(GeminiOptions.SectionName));
 
+            builder.Services.AddSingleton<IPromptProvider, FilePromptProvider>();
+            builder.Services.AddSingleton<IStringSimilarity, LevenshteinSimilarity>();
+
             builder.Services.AddHttpClient<IGeminiService, GeminiService>(client =>
             {
                 client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/");
