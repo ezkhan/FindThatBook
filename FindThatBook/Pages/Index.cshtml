@@ -20,11 +20,11 @@
         <div class="row g-3 mb-3">
             <div class="col-md-6">
                 <label asp-for="Query.Title" class="form-label">Title <span class="text-muted fw-normal">(optional)</span></label>
-                <input asp-for="Query.Title" class="form-control" placeholder="e.g. tale two cities" />
+                <input asp-for="Query.Title" class="form-control" placeholder="e.g. A Tale of Two Cities" />
             </div>
             <div class="col-md-6">
                 <label asp-for="Query.Author" class="form-label">Author <span class="text-muted fw-normal">(optional)</span></label>
-                <input asp-for="Query.Author" class="form-control" placeholder="e.g. dickens" />
+                <input asp-for="Query.Author" class="form-control" placeholder="e.g. Dickens" />
             </div>
         </div>
 
@@ -35,8 +35,7 @@
             <textarea asp-for="Query.FreeText"
                       class="form-control"
                       rows="3"
-                      placeholder="e.g. tolkien hobbit illustrated deluxe 1937, or &quot;that book where someone bets they can circle the globe in 80 days&quot;"></textarea>
-            <div class="form-text">Free form inquiery. Messy, partial, or vague — anything goes.</div>
+                      placeholder="Free form query. Messy, partial, or vague — anything goes. &#10;e.g. tolkien hobbit illustrated deluxe 1937, or &quot;it was the best of times, it was the worst of times&quot;"></textarea>
         </div>
 
         <button type="submit" class="btn btn-primary px-4">

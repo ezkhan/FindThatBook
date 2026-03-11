@@ -29,7 +29,6 @@ Users can query with any combination of:
 | Title hint | `tale two cities` |
 | Author hint | `dickens` |
 | Free-text description | `tolkien hobbit illustrated deluxe 1937` |
-| Vague / AI-only | `that book where someone bets they can circle the globe in 80 days` |
 
 The system handles sparse, noisy, and ambiguous input — including cases where the provided title and author contradict each other — and returns up to 5 ranked candidates, each with a Gemini-generated explanation grounded in the actual data retrieved.
 
