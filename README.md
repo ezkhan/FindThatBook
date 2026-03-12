@@ -179,7 +179,7 @@ Open Library's `/works/{id}.json` `authors` array includes a `role` field per en
 
 Two Gemini calls are made per search:
 
-1. **Field extraction** (`responseMimeType: "application/json"`, `temperature: 0.1`) — parses the user's query into `{ title?, author?, keywords[], suggestions[] }`. Structured JSON mode avoids markdown-fence stripping.
+1. **Field extraction** (`responseMimeType: "application/json"`, `temperature: 0.1`) — parses the user's query into `{ title?, author?, keywords[], suggestions[] }`. Structured JSON mode avoids markdown-fence stripping. The `title` and `author` fields are populated from explicit query tokens **or** from Gemini's own recognition of a quote, plot description, or character name — whichever applies. `suggestions[]` is reserved for cases where the query is ambiguous enough to plausibly match multiple books.
 2. **Per-candidate explanation** (plain text, parallel) — generates a 1–2 sentence "why it matched" rationale grounded in the actual Open Library fields retrieved, displayed inline on each result card.
 
 Both prompts are loaded from **Markdown template files** (`Prompts/extraction.md`, `Prompts/explanation.md`) at startup via `IPromptProvider` / `FilePromptProvider`. To try a different prompt, duplicate the `.md` file, edit it, and point `GeminiOptions.ExtractionPromptFile` at the new filename — no code change required.

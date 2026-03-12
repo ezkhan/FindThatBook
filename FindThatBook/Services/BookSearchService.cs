@@ -64,6 +64,31 @@ namespace FindThatBook.Services
                     fields.Author = query.Author;
                     fields.AuthorSource = FieldSource.UserInput;
                 }
+                // Fallback: if Gemini extracted nothing and only free-text was provided,
+                // treat the free-text itself as a title hint. This handles short queries like
+                // "1984" or "The Hobbit" where the model may not confidently emit a title field.
+                // Excluded: phrases that begin with description words ("book", "find", "story",
+                // "a book", etc.) — those are queries about a book, not a book title, and
+                // promoting them verbatim as title= sends nonsense to Open Library.
+                if (string.IsNullOrWhiteSpace(fields.Title)
+                    && string.IsNullOrWhiteSpace(fields.Author)
+                    && string.IsNullOrWhiteSpace(query.Title)
+                    && string.IsNullOrWhiteSpace(query.Author)
+                    && !string.IsNullOrWhiteSpace(query.FreeText))
+                {
+                    var tokens = query.FreeText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var firstToken = tokens[0].ToLowerInvariant();
+                    var descriptionStarters = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "book", "find", "story", "novel", "a", "the", "an", "search",
+                        "looking", "what", "which", "who", "where", "help", "looking"
+                    };
+                    if (tokens.Length <= 4 && !descriptionStarters.Contains(firstToken))
+                    {
+                        fields.Title = query.FreeText.Trim();
+                        fields.TitleSource = FieldSource.AiExtracted;
+                    }
+                }
                 // Merge any free-text tokens into keywords so they contribute to scoring
                 // regardless of whether title/author were also extracted. This ensures that
                 // supplementary signals like a year ("1951") or genre ("illustrated") typed
@@ -105,7 +130,7 @@ namespace FindThatBook.Services
 
                 // 6. Generate AI explanations for all final candidates in parallel
                 await Task.WhenAll(result.Candidates.Select(c =>
-                    FillExplanationAsync(c, result.OriginalQuery, ct)));
+                    FillExplanationAsync(c, result.OriginalQuery, fields, ct)));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -500,10 +525,11 @@ namespace FindThatBook.Services
         // -------------------------------------------------------------------------
 
         private async Task FillExplanationAsync(
-            BookCandidate candidate, string originalQuery, CancellationToken ct)
+            BookCandidate candidate, string originalQuery, ExtractedFields fields, CancellationToken ct)
         {
-            candidate.Explanation =
-                await _gemini.GenerateExplanationAsync(candidate, originalQuery, ct);
+            var (text, isAi) = await _gemini.GenerateExplanationAsync(candidate, originalQuery, fields, ct);
+            candidate.Explanation = text;
+            candidate.IsAiExplanation = isAi;
         }
 
         private static string BuildOriginalQuery(SearchQuery query)

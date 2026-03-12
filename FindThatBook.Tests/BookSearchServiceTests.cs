@@ -92,8 +92,9 @@ namespace FindThatBook.Tests
             mock.Setup(m => m.GenerateExplanationAsync(
                     It.IsAny<BookCandidate>(),
                     It.IsAny<string>(),
+                    It.IsAny<ExtractedFields>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(explanation);
+                .Returns(Task.FromResult<(string, bool)>((explanation, true)));
             return mock;
         }
 
@@ -166,8 +167,8 @@ namespace FindThatBook.Tests
             geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields()); // title = null
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("fallback");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<(string, bool)>(("fallback", false)));
 
             var olMock = DefaultOpenLibraryMock();
             var svc = CreateService(olMock, geminiMock);
@@ -190,8 +191,8 @@ namespace FindThatBook.Tests
             geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields()); // author = null
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("fallback");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<(string, bool)>(("fallback", false)));
 
             var olMock = DefaultOpenLibraryMock();
             var svc = CreateService(olMock, geminiMock);
@@ -222,8 +223,8 @@ namespace FindThatBook.Tests
                     Suggestions = [new AiBookSuggestion { Title = "The Hobbit", Author = "Tolkien", Reason = "known" }]
                 });
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("explanation");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<(string, bool)>(("explanation", true)));
 
             var olMock = DefaultOpenLibraryMock();
             var svc = CreateService(olMock, geminiMock);
@@ -322,16 +323,16 @@ namespace FindThatBook.Tests
             geminiUserInput.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields { Title = "The Hobbit", TitleSource = FieldSource.UserInput });
             geminiUserInput.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("ok");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<(string, bool)>(("ok", true)));
 
             // Run 2: AI-inferred title → TitleSource = AiExtracted → discounted weight (0.7 × 0.75)
             var geminiAiExtracted = new Mock<IGeminiService>();
             geminiAiExtracted.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields { Title = "The Hobbit", TitleSource = FieldSource.AiExtracted });
             geminiAiExtracted.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("ok");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<(string, bool)>(("ok", true)));
 
             var resultUserInput = await CreateService(DefaultOpenLibraryMock(), geminiUserInput)
                 .SearchAsync(new SearchQuery { Title = "The Hobbit" });
@@ -405,8 +406,8 @@ namespace FindThatBook.Tests
                     AuthorSource = FieldSource.UserInput
                 });
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("explanation");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(("explanation", true));
 
             var result = await CreateService(olMock, geminiMock)
                 .SearchAsync(new SearchQuery { Title = "Hamlet", Author = "Verne" });
@@ -465,8 +466,8 @@ namespace FindThatBook.Tests
             geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields { Keywords = ["best", "times"] });
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("Famous opening line from A Tale of Two Cities.");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(("Famous opening line from A Tale of Two Cities.", true));
 
             var result = await CreateService(olMock, geminiMock)
                 .SearchAsync(new SearchQuery { FreeText = "it was the best of times it was the worst of times" });
@@ -509,8 +510,8 @@ namespace FindThatBook.Tests
             geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ExtractedFields { Title = "zzz", TitleSource = FieldSource.UserInput });
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("explanation");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(("explanation", true));
 
             var result = await CreateService(olMock, geminiMock)
                 .SearchAsync(new SearchQuery { Title = "zzz" });
@@ -576,8 +577,8 @@ namespace FindThatBook.Tests
                     Keywords = []   // intentionally empty — "1951" must arrive via FreeText merge
                 });
             geminiMock.Setup(m => m.GenerateExplanationAsync(
-                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("explanation");
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<ExtractedFields>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(("explanation", true));
 
             var result = await CreateService(olMock, geminiMock)
                 .SearchAsync(new SearchQuery { Title = "Great Gatsby", FreeText = "1951" });

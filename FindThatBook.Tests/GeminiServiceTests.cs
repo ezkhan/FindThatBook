@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FindThatBook.Models;
 using FindThatBook.Models.Gemini;
@@ -198,9 +199,8 @@ namespace FindThatBook.Tests
                 MatchTier = MatchTier.ExactTitlePrimaryAuthor
             };
 
-            var result = await svc.GenerateExplanationAsync(candidate, "hobbit tolkien");
-
-            Assert.Equal(explanation, result);
+            var (text, isAi) = await svc.GenerateExplanationAsync(candidate, "hobbit tolkien", new ExtractedFields());
+            Assert.True(isAi);
         }
 
         [Fact]
@@ -215,10 +215,11 @@ namespace FindThatBook.Tests
                 MatchTier = MatchTier.ExactTitlePrimaryAuthor
             };
 
-            var result = await svc.GenerateExplanationAsync(candidate, "hobbit tolkien");
+            var (text, isAi) = await svc.GenerateExplanationAsync(candidate, "hobbit tolkien", new ExtractedFields());
 
-            Assert.False(string.IsNullOrWhiteSpace(result));
-            Assert.Contains("exact title", result, StringComparison.OrdinalIgnoreCase);
+            Assert.False(string.IsNullOrWhiteSpace(text));
+            Assert.Contains("exact title", text, StringComparison.OrdinalIgnoreCase);
+            Assert.False(isAi);
         }
 
         [Fact]
@@ -232,9 +233,76 @@ namespace FindThatBook.Tests
                 MatchTier = MatchTier.KeywordFallback
             };
 
-            var result = await svc.GenerateExplanationAsync(candidate, "hobbit");
+            var (text, isAi) = await svc.GenerateExplanationAsync(candidate, "hobbit", new ExtractedFields());
 
-            Assert.False(string.IsNullOrWhiteSpace(result));
+            Assert.False(string.IsNullOrWhiteSpace(text));
+            Assert.False(isAi);
+        }
+
+        // ------------------------------------------------------------------
+        // 429 rate-limit short-circuit
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task CallGeminiAsync_SetsRateLimitedFlag_On429()
+        {
+            // First call returns 429; second call should be skipped without hitting the handler.
+            int callCount = 0;
+            var handler = new TestHttpMessageHandler(_ =>
+            {
+                callCount++;
+                return new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = new StringContent("{\"error\":\"rate limited\"}", Encoding.UTF8, "application/json")
+                };
+            });
+
+            var svc = CreateService(handler);
+            var candidate = new BookCandidate
+            {
+                Title = "The Hobbit",
+                PrimaryAuthors = ["J.R.R. Tolkien"],
+                MatchTier = MatchTier.ExactTitlePrimaryAuthor
+            };
+            var fields = new ExtractedFields { Title = "The Hobbit" };
+
+            // First call — should hit the handler and set the flag
+            var (_, isAi1) = await svc.GenerateExplanationAsync(candidate, "hobbit", fields);
+            Assert.False(isAi1);
+            Assert.Equal(1, callCount);
+
+            // Second call — should be short-circuited, handler must NOT be called again
+            var (_, isAi2) = await svc.GenerateExplanationAsync(candidate, "hobbit", fields);
+            Assert.False(isAi2);
+            Assert.Equal(1, callCount); // still 1 — second call was skipped
+        }
+
+        [Fact]
+        public async Task ExtractFieldsAsync_ReturnsEmpty_On429_AndSkipsSubsequentCalls()
+        {
+            int callCount = 0;
+            var handler = new TestHttpMessageHandler(_ =>
+            {
+                callCount++;
+                return new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = new StringContent("{\"error\":\"rate limited\"}", Encoding.UTF8, "application/json")
+                };
+            });
+
+            var svc = CreateService(handler);
+            var query = new SearchQuery { Title = "1984" };
+
+            // Extraction hits 429
+            var fields = await svc.ExtractFieldsAsync(query);
+            Assert.Null(fields.Title);
+            Assert.Equal(1, callCount);
+
+            // Subsequent explanation call must be skipped entirely
+            var candidate = new BookCandidate { Title = "Nineteen Eighty-Four", MatchTier = MatchTier.ExactTitleOnly };
+            var (_, isAi) = await svc.GenerateExplanationAsync(candidate, "1984", new ExtractedFields());
+            Assert.False(isAi);
+            Assert.Equal(1, callCount); // handler still called only once
         }
     }
 }

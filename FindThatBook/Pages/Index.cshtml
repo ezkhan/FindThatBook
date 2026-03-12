@@ -50,21 +50,47 @@
 
         <div class="mb-3">
             <h5 class="mb-1">Results for: <em>@Model.Result.OriginalQuery</em></h5>
-            @if (Model.Result.ExtractedFields.Title != null || Model.Result.ExtractedFields.Author != null || Model.Result.ExtractedFields.Keywords.Count > 0)
+            @if (Model.Result.ExtractedFields.Title != null || Model.Result.ExtractedFields.Author != null || Model.Result.ExtractedFields.Keywords.Count > 0 || Model.Result.ExtractedFields.Suggestions.Count > 0)
             {
                 <small class="text-muted">
                     AI parsed &mdash;
                     @if (Model.Result.ExtractedFields.Title != null)
                     {
-                        <span>title: <strong>@Model.Result.ExtractedFields.Title</strong></span>
+                        <span>title: <strong>@Model.Result.ExtractedFields.Title</strong>
+                            @if (Model.Result.ExtractedFields.TitleSource == FindThatBook.Models.FieldSource.AiExtracted)
+                            {
+                                <span class="badge bg-info text-dark ms-1" title="Inferred by AI from the query — not explicitly provided">AI</span>
+                            }
+                        </span>
                     }
                     @if (Model.Result.ExtractedFields.Author != null)
                     {
-                        <span class="ms-2">author: <strong>@Model.Result.ExtractedFields.Author</strong></span>
+                        <span class="ms-2">author: <strong>@Model.Result.ExtractedFields.Author</strong>
+                            @if (Model.Result.ExtractedFields.AuthorSource == FindThatBook.Models.FieldSource.AiExtracted)
+                            {
+                                <span class="badge bg-info text-dark ms-1" title="Inferred by AI from the query — not explicitly provided">AI</span>
+                            }
+                        </span>
                     }
                     @if (Model.Result.ExtractedFields.Keywords.Count > 0)
                     {
                         <span class="ms-2">keywords: <strong>@string.Join(", ", Model.Result.ExtractedFields.Keywords)</strong></span>
+                    }
+                    @if (Model.Result.ExtractedFields.Suggestions.Count > 0)
+                    {
+                        <span class="ms-2">
+                            AI suggestions:
+                            @foreach (var s in Model.Result.ExtractedFields.Suggestions)
+                            {
+                                var tooltipText = $"AI suggested title: {s.Title}"
+                                    + (s.Author != null ? $" · author: {s.Author}" : "")
+                                    + $" · reason: {s.Reason}";
+                                <span class="badge bg-secondary ms-1"
+                                      data-bs-toggle="tooltip"
+                                      data-bs-placement="top"
+                                      title="@tooltipText">@s.Title@(s.Author != null ? $" ({s.Author})" : "")</span>
+                            }
+                        </span>
                     }
                 </small>
             }
@@ -143,7 +169,11 @@
                                     @if (!string.IsNullOrEmpty(candidate.Explanation))
                                     {
                                         <p class="card-text mt-2 mb-0 text-secondary">
-                                            <small class="text-muted me-1">✦ Gemini</small><span class="fst-italic">&ldquo;@candidate.Explanation&rdquo;</span>
+                                            @if (candidate.IsAiExplanation)
+                                            {
+                                                <small class="text-muted me-1">✦ Gemini</small>
+                                            }
+                                            <span class="fst-italic">&ldquo;@candidate.Explanation&rdquo;</span>
                                         </p>
                                     }
                                 </div>
@@ -161,6 +191,11 @@
         document.querySelector('form').addEventListener('submit', function () {
             const spinner = document.getElementById('btn-spinner');
             if (spinner) spinner.classList.remove('d-none');
+        });
+
+        // Initialise Bootstrap tooltips (used by AI suggestion pills)
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+            new bootstrap.Tooltip(el);
         });
     </script>
 }

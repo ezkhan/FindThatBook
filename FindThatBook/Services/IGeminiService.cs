@@ -12,8 +12,15 @@ namespace FindThatBook.Services
 
         /// <summary>
         /// Generates a 1-2 sentence "why it matched" explanation for a candidate,
-        /// grounded in the actual Open Library fields that were retrieved.
+        /// grounded in the actual Open Library fields that were retrieved and the
+        /// AI-extracted fields (including any suggestions and their reasons).
+        /// Returns the explanation text and a flag indicating whether it came from Gemini
+        /// (false means the hardcoded fallback was used).
         /// </summary>
-        Task<string> GenerateExplanationAsync(BookCandidate candidate, string originalQuery, CancellationToken ct = default);
+        Task<(string Text, bool IsAiGenerated)> GenerateExplanationAsync(
+            BookCandidate candidate,
+            string originalQuery,
+            ExtractedFields extractedFields,
+            CancellationToken ct = default);
     }
 }

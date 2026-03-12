@@ -93,6 +93,56 @@ namespace FindThatBook.Tests
         }
 
         [Fact]
+        public async Task SearchAsync_ExcludesYearTokensFromQ_WhenKeywordsContainYear()
+        {
+            var json = JsonSerializer.Serialize(new OlSearchResponse());
+            var handler = TestHttpMessageHandler.ReturnJson(json);
+            var svc = CreateService(handler);
+
+            // Year alongside a title: "1951" must NOT reach q= — OL doesn't index
+            // first_publish_year via q= and it would suppress results.
+            await svc.SearchAsync("The Great Gatsby", null, ["1951"]);
+
+            var url = handler.LastRequest?.RequestUri?.ToString();
+            Assert.NotNull(url);
+            Assert.Contains("title=", url);
+            Assert.DoesNotContain("q=", url);
+        }
+
+        [Fact]
+        public async Task SearchAsync_ExcludesYearButKeepsOtherKeywordsInQ()
+        {
+            var json = JsonSerializer.Serialize(new OlSearchResponse());
+            var handler = TestHttpMessageHandler.ReturnJson(json);
+            var svc = CreateService(handler);
+
+            await svc.SearchAsync("The Great Gatsby", null, ["fitzgerald", "1951"]);
+
+            var url = handler.LastRequest?.RequestUri?.ToString();
+            Assert.NotNull(url);
+            Assert.Contains("q=", url);
+            Assert.Contains("fitzgerald", url);
+            Assert.DoesNotContain("1951", url);
+        }
+
+        [Fact]
+        public async Task SearchAsync_KeepsYearTokenInQ_WhenNoTitleOrAuthorPresent()
+        {
+            // "1984" is a valid title token, not a publish-year filter.
+            // When there is no title/author, a 4-digit token must reach q= as the primary signal.
+            var json = JsonSerializer.Serialize(new OlSearchResponse());
+            var handler = TestHttpMessageHandler.ReturnJson(json);
+            var svc = CreateService(handler);
+
+            await svc.SearchAsync(null, null, ["1984"]);
+
+            var url = handler.LastRequest?.RequestUri?.ToString();
+            Assert.NotNull(url);
+            Assert.Contains("q=", url);
+            Assert.Contains("1984", url);
+        }
+
+        [Fact]
         public async Task SearchAsync_ReturnsEmptyResponse_OnHttpException()
         {
             var svc = CreateService(TestHttpMessageHandler.Throws());

@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using FindThatBook.Models.OpenLibrary;
 
 namespace FindThatBook.Services
@@ -32,11 +33,18 @@ namespace FindThatBook.Services
             if (!string.IsNullOrWhiteSpace(author))
                 queryParams.Add($"author={Uri.EscapeDataString(TextNormalizer.Normalize(author))}");
 
-            // Keywords are always appended as q= alongside any structured fields.
+            // Keywords are appended as q= alongside any structured fields.
             // OL treats q= as a free-text clause that combines with title=/author= filters.
+            // Pure 4-digit year tokens (e.g. "1951") are excluded from q= only when a title
+            // or author is already present, because OL's full-text index does not match
+            // first_publish_year via q= and including a bare year alongside title= suppresses
+            // results. When there is no title/author (e.g. the sole query is "1984"), the
+            // token is kept so it reaches OL as the primary search signal.
+            bool hasStructuredFields = !string.IsNullOrWhiteSpace(title) || !string.IsNullOrWhiteSpace(author);
             var keywordList = keywords?
                 .Where(k => !string.IsNullOrWhiteSpace(k))
                 .Select(TextNormalizer.Normalize)
+                .Where(k => !hasStructuredFields || !Regex.IsMatch(k, @"^\d{4}$"))
                 .ToList() ?? [];
 
             if (keywordList.Count > 0)
