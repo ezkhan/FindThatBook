@@ -186,6 +186,30 @@ Both prompts are loaded from **Markdown template files** (`Prompts/extraction.md
 
 The `suggestions[]` list enables AI-knowledge-based matching: Gemini can recognise *"that book where someone bets they can circle the globe in 80 days"* as *Around the World in Eighty Days* from training data even when no title or author tokens are parseable. Each suggestion must include a `reason` field.
 
+### Direct REST API usage (no SDKs)
+
+Both external dependencies — Open Library and Gemini — are accessed via raw `HttpClient` calls rather than SDK packages. This was a deliberate choice.
+
+**Open Library** has no official .NET SDK. OL's own client library is Python-only. A third-party .NET wrapper, [OpenLibrary.NET](https://github.com/Luca3317/OpenLibrary.NET) (`dotnet add package OpenLibrary.NET`), does exist and covers the APIs used here (Search, Works, Authors, Covers). It was considered but not adopted for the following reasons:
+
+- It is a community project with no releases published, 22 stars, and open issues — not a stability baseline suitable for a dependency.
+- This application uses a narrow, well-defined slice of the OL API (four endpoints, specific field projections). A bespoke `IOpenLibraryService` with hand-written DTOs is no more code and gives precise control over what is deserialized and how errors are handled.
+- Wrapping `HttpClient` directly keeps the `IOpenLibraryService` interface mockable with the standard `HttpMessageHandler` pattern — no additional test-double infrastructure required.
+
+**Gemini** is accessed via the `generateContent` REST endpoint directly. Google publishes `Google.AI.Generative` NuGet packages, but the two calls made here — structured JSON extraction and plain-text explanation generation — map to straightforward `POST` requests whose shape is stable and fully documented. The `GeminiRequest` / `GeminiResponse` DTOs in `Models/Gemini/` own that contract explicitly, making the integration auditable without chasing through SDK source code.
+
+The broader trade-offs of raw REST vs SDK apply to both:
+
+| Concern | SDK | Raw REST |
+|---|---|---|
+| Dependency footprint | Adds a versioned package per service | Zero extra dependencies |
+| Transparency | Abstracts auth, serialization, retry | Every request is explicit and inspectable |
+| Testability | Requires mocking the SDK client | `HttpClient` mocked via `HttpMessageHandler` — standard .NET pattern |
+| Portability | Ties code to a vendor's release cadence | Immune to SDK breaking changes or deprecations |
+| Learning signal | Hides what the API actually does | Demonstrates knowledge of the underlying HTTP contract |
+
+The trade-off is that retry logic, streaming, and future API version upgrades require manual handling rather than a library update — acknowledged in [Future Improvements](#future-improvements).
+
 ### Graceful degradation
 
 If Gemini is unavailable, rate-limited, or misconfigured:
