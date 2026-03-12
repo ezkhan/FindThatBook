@@ -69,12 +69,14 @@ The system handles sparse, noisy, and ambiguous input — including cases where 
                            AiExtracted if inferred from FreeText by Gemini
    -> Fallback: raw query inputs used if Gemini fails or returns empty
         |
-3. CollectSearchResultsAsync()
-   -> OL /search.json  (title + author + keywords -- combined)
-   -> OL /search.json  (title only)  --|
-   -> OL /search.json  (author only) --| parallel, only when both
-                                        title and author are present
-   -> OL /search.json  x N AI suggestions  -- parallel
+3. CollectSearchResultsAsync()  -- all OL calls run in a single parallel batch
+   -> OL /search.json  (title only)         -- if hasTitle
+   -> OL /search.json  (author only)        -- if hasAuthor
+   -> OL /search.json  (keywords only)      -- if hasKeywords
+   -> OL /search.json  (title+author+keywords combined) -- if any field present
+   -> OL /search.json  (verbatim freeText)  -- if !hasTitle and freeText provided
+   -> OL /search.json  x N AI suggestions   -- parallel
+   Results de-duplicated by work key before proceeding.
         |
 4. BuildCandidatesAsync()
    -> QuickDetermineTier() -- pre-filter, no I/O
@@ -94,6 +96,24 @@ The system handles sparse, noisy, and ambiguous input — including cases where 
 ---
 
 ## Design Decisions
+
+### Open Library search strategy
+
+Each search fires up to five structured OL `/search.json` calls plus up to three AI-suggestion calls, all in a **single parallel batch**. Results are de-duplicated by work key before scoring.
+
+| Call | Condition | Rationale |
+|---|---|---|
+| Title-only | `hasTitle` | Ensures title hits are not suppressed by a mismatched or absent author |
+| Author-only | `hasAuthor` | Ensures author hits are not suppressed by a mismatched or absent title |
+| Keywords-only | `hasKeywords` | Surfaces thematic matches when no title/author is known |
+| Combined (title + author + keywords) | any field present | Highest-precision query; all three fields reinforce each other |
+| Verbatim free-text | `!hasTitle` and `freeText` provided | Sends the raw phrase as a single `q=` term; OL's own phrase-matching reliably handles quote- and description-style queries (e.g. *"it was the best of times"* → *A Tale of Two Cities*) that sparse extracted keywords would miss |
+| Per AI suggestion | `suggestions.Count > 0` (up to 3) | Fires a title+author search for each book Gemini recognised from training knowledge; enables matches that have no parseable title/author tokens in the user's query |
+
+**Why solo searches alongside the combined search?**
+The combined query (`title=X&author=Y&q=keywords`) requires OL to satisfy all supplied fields simultaneously. A mismatched pair — e.g. `title: Hamlet, author: Verne` — returns zero results from the combined call even though each field alone would surface the correct book. The solo searches guarantee that a correct title or correct author always produces candidates regardless of what the other fields contain. The combined search is still included because when all fields agree it returns the most relevant results first, improving ranking.
+
+**Candidates from the solo searches subsume all pair combinations.** If `title=X` and `author=Y` are each searched solo, any book that would appear in a `title=X&author=Y` search will also appear in at least one of the two solo results. Explicit pair searches (`title=X&author=Y` without keywords, `title=X&q=keywords` without author, etc.) are therefore redundant and are omitted to keep the call count minimal.
 
 ### Fuzzy match scoring
 
