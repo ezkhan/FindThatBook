@@ -518,5 +518,77 @@ namespace FindThatBook.Tests
             // The candidate scored exactly 0 and must be excluded from results.
             Assert.Empty(result.Candidates);
         }
+
+        // ------------------------------------------------------------------
+        // SearchAsync — keyword year matching
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SearchAsync_KeywordYear_ScoresHigherForMatchingPublishYear()
+        {
+            // Two editions of "The Great Gatsby": one from 1925, one from 1951.
+            // A keyword "1951" should lift the 1951 edition above the 1925 one.
+            var gatsby1925 = new OlSearchDoc
+            {
+                Key = "/works/OLGatsby1925W",
+                Title = "The Great Gatsby",
+                AuthorName = ["F. Scott Fitzgerald"],
+                FirstPublishYear = 1925
+            };
+            var gatsby1951 = new OlSearchDoc
+            {
+                Key = "/works/OLGatsby1951W",
+                Title = "The Great Gatsby",
+                AuthorName = ["F. Scott Fitzgerald"],
+                FirstPublishYear = 1951
+            };
+
+            OlWorkDetails MakeDetails(OlSearchDoc doc) => new()
+            {
+                Key = doc.Key,
+                Title = doc.Title,
+                Authors = [new OlWorkAuthorEntry { Author = new OlKeyRef { Key = "/authors/OLFitzW" }, Role = null }]
+            };
+
+            var olMock = new Mock<IOpenLibraryService>();
+            olMock.Setup(m => m.SearchAsync(
+                    It.IsAny<string?>(), It.IsAny<string?>(),
+                    It.IsAny<IEnumerable<string>?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlSearchResponse { NumFound = 2, Docs = [gatsby1925, gatsby1951] });
+            olMock.Setup(m => m.GetWorkAsync("/works/OLGatsby1925W", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeDetails(gatsby1925));
+            olMock.Setup(m => m.GetWorkAsync("/works/OLGatsby1951W", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeDetails(gatsby1951));
+            olMock.Setup(m => m.GetAuthorAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new OlAuthorDetails { Name = "F. Scott Fitzgerald" });
+            olMock.Setup(m => m.GetCoverUrl(It.IsAny<int>(), It.IsAny<string>()))
+                .Returns("https://example.com/cover.jpg");
+
+            var geminiMock = new Mock<IGeminiService>();
+            geminiMock.Setup(m => m.ExtractFieldsAsync(It.IsAny<SearchQuery>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ExtractedFields
+                {
+                    // Gemini extracted a clean title and returned no keywords — simulating the
+                    // real scenario where "1951" in FreeText is ignored by the model because
+                    // it already resolved the title. The fix merges FreeText tokens into Keywords.
+                    Title = "Great Gatsby",
+                    TitleSource = FieldSource.UserInput,
+                    Keywords = []   // intentionally empty — "1951" must arrive via FreeText merge
+                });
+            geminiMock.Setup(m => m.GenerateExplanationAsync(
+                    It.IsAny<BookCandidate>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("explanation");
+
+            var result = await CreateService(olMock, geminiMock)
+                .SearchAsync(new SearchQuery { Title = "Great Gatsby", FreeText = "1951" });
+
+            Assert.True(result.Candidates.Count >= 2);
+
+            var score1925 = result.Candidates.First(c => c.FirstPublishYear == 1925).MatchScore;
+            var score1951 = result.Candidates.First(c => c.FirstPublishYear == 1951).MatchScore;
+
+            Assert.True(score1951 > score1925,
+                $"Expected 1951 edition ({score1951:F3}) to score higher than 1925 edition ({score1925:F3}) when keyword=\"1951\"");
+        }
     }
 }

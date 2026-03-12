@@ -18,7 +18,8 @@ namespace FindThatBook.Models
         /// Continuous relevance score used for ranking.
         /// Formula: (userInputTitle × 0.7) + (geminiTitle × 0.6)
         ///        + (userInputAuthor × 0.5) + (geminiAuthor × 0.4)
-        ///        + (geminiKeywords × 0.3).
+        ///        + (keywords × 0.3).
+        /// Keywords are matched against title text, subjects, and first-publish year.
         /// Higher is better. User-supplied fields outweigh AI-inferred equivalents.
         /// </summary>
         public double MatchScore { get; set; }

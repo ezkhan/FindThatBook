@@ -64,9 +64,18 @@ namespace FindThatBook.Services
                     fields.Author = query.Author;
                     fields.AuthorSource = FieldSource.UserInput;
                 }
-                if (fields.Title == null && fields.Author == null && fields.Keywords.Count == 0
-                    && !string.IsNullOrWhiteSpace(query.FreeText))
-                    fields.Keywords = [.. query.FreeText.Split(' ', StringSplitOptions.RemoveEmptyEntries)];
+                // Merge any free-text tokens into keywords so they contribute to scoring
+                // regardless of whether title/author were also extracted. This ensures that
+                // supplementary signals like a year ("1951") or genre ("illustrated") typed
+                // into the FreeText field always reach CalculateScore even when Gemini already
+                // parsed a clean title and author from the same query.
+                if (!string.IsNullOrWhiteSpace(query.FreeText))
+                {
+                    var freeTextTokens = query.FreeText
+                        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                        .Where(t => !fields.Keywords.Contains(t, StringComparer.OrdinalIgnoreCase));
+                    fields.Keywords = [.. fields.Keywords, .. freeTextTokens];
+                }
 
                 // 2. Collect raw OL docs from field-based search + per-suggestion searches
                 var rawDocs = await CollectSearchResultsAsync(fields, query.FreeText, ct);
@@ -269,12 +278,15 @@ namespace FindThatBook.Services
                 .Where(e => !string.IsNullOrWhiteSpace(e.Title))
                 .Select(e =>
                 {
-                    // Author is confirmed (1.0); add keyword signal from entry title if present
+                    // Author is confirmed (1.0); add keyword signal from title and publish year
+                    var normTitle  = TextNormalizer.Normalize(e.Title);
+                    var yearString = ParseYear(e.FirstPublishDate)?.ToString();
                     var keywordScore = fields.Keywords.Count > 0
                         ? fields.Keywords
                             .Select(TextNormalizer.Normalize)
-                            .Count(k => !string.IsNullOrEmpty(k)
-                                && TextNormalizer.Normalize(e.Title).Contains(k))
+                            .Count(k => !string.IsNullOrEmpty(k) &&
+                                (normTitle.Contains(k) ||
+                                 (!string.IsNullOrEmpty(yearString) && yearString == k)))
                           / (double)fields.Keywords.Count
                         : 0.0;
 
@@ -395,14 +407,26 @@ namespace FindThatBook.Services
                 }
             }
 
-            // --- Keyword score [0.0–1.0] — ratio of query keywords found in the candidate title ---
+            // --- Keyword score [0.0–1.0] ---
+            // Each keyword is checked against: the candidate title, its subjects, and its
+            // first-publish year. A year keyword (e.g. "1951") is compared to FirstPublishYear
+            // directly so edition-year queries meaningfully re-order results.
             double keywordScore = 0.0;
             if (fields.Keywords.Count > 0)
             {
-                var normTitle = TextNormalizer.Normalize(doc.Title);
+                var normTitle    = TextNormalizer.Normalize(doc.Title);
+                var normSubjects = (doc.Subjects ?? [])
+                    .Select(s => TextNormalizer.Normalize(s))
+                    .ToList();
+                var yearString   = doc.FirstPublishYear?.ToString();
+
                 var matched = fields.Keywords
                     .Select(TextNormalizer.Normalize)
-                    .Count(k => !string.IsNullOrEmpty(k) && normTitle.Contains(k));
+                    .Count(k =>
+                        (!string.IsNullOrEmpty(k) && normTitle.Contains(k)) ||
+                        normSubjects.Any(s => s.Contains(k)) ||
+                        (!string.IsNullOrEmpty(yearString) && yearString == k));
+
                 keywordScore = (double)matched / fields.Keywords.Count;
             }
 

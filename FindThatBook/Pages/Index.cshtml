@@ -125,7 +125,7 @@
                                             <span class="badge @GetTierBadgeClass(candidate.MatchTier) text-nowrap">
                                                 @GetTierLabel(candidate.MatchTier)
                                             </span>
-                                            <span class="badge bg-light text-dark border text-nowrap" title="user-title × 0.7 + AI-title × 0.6 + user-author × 0.5 + AI-author × 0.4 + keywords × 0.3">
+                                            <span class="badge bg-light text-dark border text-nowrap" title="user-title × 0.7 + AI-title × 0.6 + user-author × 0.5 + AI-author × 0.4 + keywords × 0.3 (matched against title, subjects, year)">
                                                 @candidate.MatchScore.ToString("F2")
                                             </span>
                                             @if (!string.IsNullOrEmpty(candidate.OpenLibraryUrl))
