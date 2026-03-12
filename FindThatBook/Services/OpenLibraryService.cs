@@ -32,13 +32,14 @@ namespace FindThatBook.Services
             if (!string.IsNullOrWhiteSpace(author))
                 queryParams.Add($"author={Uri.EscapeDataString(TextNormalizer.Normalize(author))}");
 
-            // Keywords become a fallback free-text query only when no structured fields are present
+            // Keywords are always appended as q= alongside any structured fields.
+            // OL treats q= as a free-text clause that combines with title=/author= filters.
             var keywordList = keywords?
                 .Where(k => !string.IsNullOrWhiteSpace(k))
                 .Select(TextNormalizer.Normalize)
                 .ToList() ?? [];
 
-            if (keywordList.Count > 0 && string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(author))
+            if (keywordList.Count > 0)
                 queryParams.Add($"q={Uri.EscapeDataString(string.Join(' ', keywordList))}");
 
             if (queryParams.Count == 0)

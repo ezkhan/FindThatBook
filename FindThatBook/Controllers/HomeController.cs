@@ -15,7 +15,7 @@ namespace FindThatBook.Controllers
 
         public IActionResult Index()
         {
-            return View();
+            return RedirectToPage("/Index");
         }
 
         public IActionResult Privacy()

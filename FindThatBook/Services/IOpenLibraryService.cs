@@ -6,7 +6,7 @@ namespace FindThatBook.Services
     {
         /// <summary>
         /// Searches Open Library using field-specific parameters.
-        /// Keywords are used as a fallback <c>q=</c> query only when title and author are both absent.
+        /// Keywords are appended as a <c>q=</c> free-text clause alongside any title/author filters, if any.
         /// </summary>
         Task<OlSearchResponse> SearchAsync(
             string? title,

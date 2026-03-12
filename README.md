@@ -342,7 +342,7 @@ FindThatBook.Tests/                    # xUnit + Moq unit test project
 
 ## Testing Strategy
 
-The `FindThatBook.Tests` project (xUnit + Moq, 96 tests) covers all service layers without hitting any external API.
+The `FindThatBook.Tests` project (xUnit + Moq, 98 tests) covers all service layers without hitting any external API.
 
 | Suite | What is covered |
 |---|---|
@@ -377,6 +377,7 @@ Steps:
    Gemini__Model                 =  gemini-2.5-flash
    Gemini__ExtractionPromptFile  =  extraction.md
    Gemini__ExplanationPromptFile =  explanation.md
+   OpenLibrary__UserAgent        =  FindThatBook (<your contact email>)
    ```
    (Double underscore maps to `Gemini:ApiKey` etc. in .NET configuration hierarchy)
 4. Publish

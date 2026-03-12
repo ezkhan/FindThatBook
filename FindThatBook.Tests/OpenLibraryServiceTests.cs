@@ -78,7 +78,7 @@ namespace FindThatBook.Tests
         }
 
         [Fact]
-        public async Task SearchAsync_DoesNotAddKeywordsQuery_WhenTitleIsPresent()
+        public async Task SearchAsync_IncludesKeywordsAsQ_WhenTitleIsAlsoPresent()
         {
             var json = JsonSerializer.Serialize(new OlSearchResponse());
             var handler = TestHttpMessageHandler.ReturnJson(json);
@@ -88,7 +88,8 @@ namespace FindThatBook.Tests
 
             var url = handler.LastRequest?.RequestUri?.ToString();
             Assert.NotNull(url);
-            Assert.DoesNotContain("q=", url);
+            Assert.Contains("title=", url);
+            Assert.Contains("q=", url);
         }
 
         [Fact]
