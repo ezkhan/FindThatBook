@@ -129,6 +129,17 @@ score = (userInputTitle  x 0.7) + (geminiTitle  x 0.6)
 - **Exact normalized matches** score 1.0. **Partial matches** are scored via the pluggable `IStringSimilarity` strategy (default: `LevenshteinSimilarity` — `1 - editDistance / max(|a|, |b|)`), giving a score that scales inversely with edit distance.
 - **Contributor author matches** are discounted to 0.6 vs 1.0 for primary authors. Partial matches in the contributor fallback are further multiplied by 0.5.
 - Scores above 1.0 are possible when title and author both match strongly (e.g. exact user-input title + exact primary author = 1.2).
+- **Keywords are matched against title text, `subject` tags, and `first_publish_year`**, so a year token such as `"1951"` contributes to `keywordScore` and thereby raises the overall `MatchScore` of editions whose publish year matches — naturally floating them higher in the score-ordered results without any explicit sort by year.
+
+### FreeText dual purpose
+
+`FreeText` is the unstructured input field and serves two distinct roles in the same request:
+
+1. **Verbatim phrase search** — when no title was extracted, the full `FreeText` string is sent to OL as a single `q=` term. OL's own phrase-matching handles quote- and description-style queries accurately (e.g. *"it was the best of times"* → *A Tale of Two Cities*) even when Gemini only extracts sparse keywords like `["best", "times"]` that would miss the book.
+
+2. **Scoring keyword tokens** — `FreeText` tokens are always merged into `fields.Keywords` after Gemini extraction, deduplicated against anything Gemini already returned. This means supplementary signals typed into FreeText — a year (`"1951"`), a format (`"illustrated"`), a subject (`"dystopia"`) — always reach `CalculateScore` and adjust the candidate's `MatchScore`. The final order is purely score-descending; there is no explicit sort by year or any other keyword field.
+
+The two roles are independent: the verbatim path uses the raw `query.FreeText` string; the keyword-scoring path uses the merged token list.
 
 ### Swappable similarity strategy
 
@@ -159,16 +170,6 @@ A `MatchTier` enum is retained alongside the continuous score purely for the UI 
 | `NearMatchTitleOnly` | All title tokens present — author unconfirmed |
 | `AuthorFallback` | Author confirmed, no title signal |
 | `KeywordFallback` | AI-recognized or keyword-only match |
-
-### Independent field searching
-
-When the user provides **both** a title and an author, three Open Library searches run in parallel:
-
-1. Combined (`title=X&author=Y`) — the most specific query
-2. Title-only (`title=X`) — surfaces correct-title books when the author is wrong
-3. Author-only (`author=Y`) — surfaces correct-author books when the title is wrong
-
-Results are de-duplicated by work key. This ensures that a mismatched pair such as `title: Hamlet, author: Verne` still returns Hamlet by Shakespeare and works by Jules Verne, ordered by their respective component scores.
 
 ### Primary author vs contributor distinction
 
