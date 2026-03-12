@@ -237,15 +237,42 @@ cd FindThatBook
 
 ### 2. Set the Gemini API key
 
+There are two ways to provide the key — choose whichever suits your workflow:
+
+**Option A — `appsettings.json` directly (quickest for a one-off run)**
+
+Open `FindThatBook/appsettings.json` and fill in the blank value:
+
+```json
+"Gemini": {
+  "ApiKey": "YOUR_API_KEY_HERE"
+}
+```
+
+> ⚠️ Do not commit the file with a real key in it. This option is fine for a quick local test but is not recommended if you intend to make and commit code changes.
+
+**Option B — User secrets (recommended if you are working on and committing code)**
+
+.NET user secrets stores the key outside the repository so it can never be accidentally committed. If this is your first time using user secrets with this project, initialise the store first:
+
 ```bash
 cd FindThatBook
+dotnet user-secrets init
+```
+
+Then set the key:
+
+```bash
 dotnet user-secrets set "Gemini:ApiKey" "YOUR_API_KEY_HERE"
 ```
 
-This stores the key in your local user secrets store and is never committed to source control. The `appsettings.json` `Gemini:ApiKey` field is intentionally left blank.
+This stores the key in your local user secrets store and is never committed to source control. The `appsettings.json` `Gemini:ApiKey` field is intentionally left blank and safe to commit as-is.
 
-> The default model is `gemini-2.5-flash`. To use a different model, also run:
-> `dotnet user-secrets set "Gemini:Model" "gemini-2.0-flash-lite"`
+> The default model is `gemini-2.5-flash`. To change it via user secrets:
+> ```bash
+> dotnet user-secrets set "Gemini:Model" "gemini-2.0-flash-lite"
+> ```
+> Or set `Gemini:Model` directly in `appsettings.json` — the model name is not case-sensitive.
 
 ### 3. Run the web app
 
