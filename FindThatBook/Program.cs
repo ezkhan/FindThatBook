@@ -1,4 +1,5 @@
 using FindThatBook.Services;
+using Microsoft.Extensions.Options;
 
 namespace FindThatBook
 {
@@ -12,16 +13,22 @@ namespace FindThatBook
             builder.Services.AddControllersWithViews();
             builder.Services.AddRazorPages();
 
-            builder.Services.AddHttpClient<IOpenLibraryService, OpenLibraryService>(client =>
-            {
-                client.BaseAddress = new Uri("https://openlibrary.org/");
-                client.DefaultRequestHeaders.Add("Accept", "application/json");
-                client.DefaultRequestHeaders.Add("User-Agent", "FindThatBook (ezafat.khan+infotrack@gmail.com)"); // NOTE specifying a user agent increases Open Library's API rate limit 3x
-                client.Timeout = TimeSpan.FromSeconds(25);
-            });
-
             builder.Services.Configure<GeminiOptions>(
                 builder.Configuration.GetSection(GeminiOptions.SectionName));
+
+            builder.Services.Configure<OpenLibraryOptions>(
+                builder.Configuration.GetSection(OpenLibraryOptions.SectionName));
+
+            builder.Services.AddHttpClient<IOpenLibraryService, OpenLibraryService>((sp, client) =>
+            {
+                var olOptions = sp.GetRequiredService<IOptions<OpenLibraryOptions>>().Value;
+                client.BaseAddress = new Uri("https://openlibrary.org/");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+                // Specifying a User-Agent grants 3× OL rate limit (3 req/s vs 1 req/s).
+                // Override via OpenLibrary__UserAgent in Azure App Service Application Settings.
+                client.DefaultRequestHeaders.Add("User-Agent", olOptions.UserAgent);
+                client.Timeout = TimeSpan.FromSeconds(25);
+            });
 
             builder.Services.AddSingleton<IPromptProvider, FilePromptProvider>();
             builder.Services.AddSingleton<IStringSimilarity, LevenshteinSimilarity>();

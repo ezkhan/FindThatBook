@@ -364,7 +364,7 @@ dotnet test FindThatBook.Tests
 
 ## Demo Deployment
 
-> _Live URL: to be added after deployment._
+> _Live Demo URL_: https://findthatbook20260312073741-agb8b0gsauejghew.canadacentral-01.azurewebsites.net/
 
 Planned target: **Azure App Service (Free F1 tier)**
 
