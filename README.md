@@ -429,6 +429,15 @@ Steps:
 - **Pagination** — for queries that return many candidates, the API could be redesigned to return results in pages, with the frontend requesting additional pages as the user scrolls. This would reduce initial latency and allow Gemini explanations to be generated on-demand for visible candidates.
 - **Horizontal and vertical scaling** — while the Free F1 tier of Azure App Service is sufficient for a demo, a production deployment would benefit from scaling out to multiple instances and/or upgrading to a more powerful tier to handle increased traffic and reduce latency.
 
+### Observability and monitoring
+As a toy/demo application, this project relies only on .NET's built-in `ILogger` writing to the console and the Azure App Service log stream. That is sufficient to diagnose issues during development but falls well short of what a production deployment would need.
+
+In a real-world system we may have additional considerations like:
+
+- **Error tracking** — a service such as [Raygun](https://raygun.com/) would capture unhandled exceptions and degraded searches (e.g. Gemini timeouts, OL 503s) with full stack traces, request context, and alerting. The existing `catch` blocks in `BookSearchService` and the two HTTP services already log structured errors via `ILogger`; routing those to Raygun would require only adding the `Mindscape.Raygun4Net.AspNetCore` package and a one-line middleware registration.
+- **Application performance monitoring** — tools like Azure Application Insights or Raygun APM would surface slow OL/Gemini call latencies, fan-out bottlenecks, and per-endpoint throughput without any manual instrumentation beyond registering the SDK.
+- **Database query monitoring** — this application has no data layer, so there is nothing to monitor at the query level today. If a database were introduced (e.g. to cache OL responses or store search history), a tool like [SolarWinds Database Performance Analyzer (DPA)](https://www.solarwinds.com/database-performance-analyzer) would be the natural choice for identifying slow queries, index gaps, and wait-time analysis across the query lifecycle.
+
 ### Developer experience
 - **OpenAPI / Swagger** — `Swashbuckle.AspNetCore` would auto-generate interactive API docs for `/api/search`.
 - **Docker support** — a `Dockerfile` would enable deployment to Azure Container Apps, Railway, or any container host as an alternative to App Service.
